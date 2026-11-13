@@ -210,4 +210,4 @@ See [tickets/README.md](tickets/README.md): built-in overlay window, settings UI
 
 ## License
 
-[MIT](LICENSE) © Mohamad Masri, [Masri Systems](https://masrisystems.com)
+[Masri Systems Non-Commercial Source-Available License (MS-NC-1.0)](LICENSE) © Mohamad Masri, [Masri Systems](https://masrisystems.com) — personal and academic use only; business and commercial environments prohibited without a commercial license (`hallo@masrisystems.com`).

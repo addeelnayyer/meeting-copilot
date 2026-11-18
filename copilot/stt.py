@@ -26,10 +26,11 @@ def whisper_settings(cuda_devices):
     return model, device, compute
 
 
-def stt_engine(setting, system, machine, binary, model):
+def stt_engine(setting, system, machine, binary):
     """(engine, reason) for STT_ENGINE `setting` on this platform (sys.platform, platform.machine()),
-    given the whisperkit-cli path and the WhisperKit model folder (None when missing). `auto` is
-    WhisperKit only on macOS arm64; reason says why WhisperKit was wanted but is not used."""
+    given the whisperkit-cli path (None when missing). `auto` is WhisperKit only on macOS arm64;
+    reason says why WhisperKit was wanted but is not used. The model is found or downloaded when
+    the engine is built."""
     if setting not in ("auto", *STT_ENGINES):
         raise ValueError(f"STT_ENGINE={setting!r}: use auto, {' or '.join(STT_ENGINES)}")
     wanted = setting == "whisperkit" or (setting == "auto" and system == "darwin" and machine == "arm64")
@@ -39,8 +40,6 @@ def stt_engine(setting, system, machine, binary, model):
         why = "it needs macOS"
     elif not binary:
         why = whisperkit.NO_BINARY
-    elif not model:
-        why = whisperkit.no_model()
     else:
         return whisperkit.WhisperKitEngine.name, None
     return FasterWhisperEngine.name, _fallback_reason(setting, why)
@@ -54,14 +53,13 @@ def _fallback_reason(setting, why):
 
 def chosen_stt_engine(setting):
     """stt_engine() for this machine."""
-    return stt_engine(setting, sys.platform, platform.machine(),
-                      shutil.which("whisperkit-cli"), whisperkit.model_path())
+    return stt_engine(setting, sys.platform, platform.machine(), shutil.which("whisperkit-cli"))
 
 
 def build_stt_engine(setting=None):
     """Build and warm up the chosen STT engine (`setting` overrides STT_ENGINE) once; it then
     serves transcribe(chunk) and close(). WhisperKit that fails to start or become healthy falls
-    back to faster-whisper, like a missing binary or model; the reason is printed."""
+    back to faster-whisper, like a missing binary or a failed model download; the reason is printed."""
     setting = setting or config.STT_ENGINE
     name, reason = chosen_stt_engine(setting)
     if name == whisperkit.WhisperKitEngine.name:

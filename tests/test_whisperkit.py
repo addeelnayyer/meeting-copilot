@@ -110,22 +110,77 @@ def make_model(folder):
 
 
 # --- Finding the STT model -----------------------------------------------------
-def test_model_comes_from_the_override_then_macwhisper(tmp_path, monkeypatch):
-    macwhisper = tmp_path / "MacWhisper"
-    monkeypatch.setattr(whisperkit, "MACWHISPER_MODELS", macwhisper)
+class FakeHub:
+    """huggingface_hub.snapshot_download over a fake repo: the cache is a folder, the
+    network a list of downloads (allow_patterns of each); network=False makes downloads fail."""
+
+    def __init__(self, cache):
+        self.cache, self.downloads, self.network = cache, [], True
+
+    def snapshot_download(self, repo_id, allow_patterns, local_files_only=False):
+        from huggingface_hub.errors import LocalEntryNotFoundError
+
+        assert repo_id == "argmaxinc/whisperkit-coreml"
+        model = allow_patterns.removesuffix("/*")
+        if not (self.cache / model).is_dir():
+            if local_files_only or not self.network:  # what the real hub raises for both
+                raise LocalEntryNotFoundError(f"{model} is not in the cache")
+            self.downloads.append(allow_patterns)
+            make_model(self.cache / model)
+        return str(self.cache)
+
+
+@pytest.fixture
+def hub(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    fake = FakeHub(tmp_path / "hf-cache")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake.snapshot_download)
+    monkeypatch.setattr(whisperkit, "MACWHISPER_MODELS", tmp_path / "MacWhisper")
     monkeypatch.setattr(config, "WHISPERKIT_MODEL", MODEL)
     monkeypatch.setattr(config, "WHISPERKIT_MODEL_PATH", "")
-    assert whisperkit.model_path() is None
+    return fake
 
-    # MacWhisper's own pick is another model; the configured one is used.
-    make_model(macwhisper / "openai_whisper-base")
-    assert whisperkit.model_path() is None
-    mac = make_model(macwhisper / MODEL)
+
+def test_model_search_order(tmp_path, hub, monkeypatch, capsys):
+    # Nowhere yet: only the configured model's subfolder is downloaded, into the HF cache.
+    assert whisperkit.model_path() == hub.cache / MODEL
+    assert hub.downloads == [f"{MODEL}/*"]
+
+    # A second run finds it in the cache without the network.
+    hub.network = False
+    assert whisperkit.model_path() == hub.cache / MODEL
+    assert len(hub.downloads) == 1
+
+    # MacWhisper's own pick is another model; the configured one is used, ahead of the cache.
+    make_model(whisperkit.MACWHISPER_MODELS / "openai_whisper-base")
+    assert whisperkit.model_path() == hub.cache / MODEL
+    mac = make_model(whisperkit.MACWHISPER_MODELS / MODEL)
     assert whisperkit.model_path() == mac
 
-    own = make_model(tmp_path / "mine")
+    own = tmp_path / "mine"
     monkeypatch.setattr(config, "WHISPERKIT_MODEL_PATH", str(own))
+    assert whisperkit.model_path() == mac  # an override without a model is skipped, and said so
+    assert "WHISPERKIT_MODEL_PATH" in capsys.readouterr().out
+    make_model(own)
     assert whisperkit.model_path() == own
+    assert len(hub.downloads) == 1
+
+
+def test_a_failed_download_falls_back_to_faster_whisper_with_the_reason(hub, monkeypatch, capsys):
+    class FasterWhisper:
+        def warm_up(self):
+            pass
+
+        def close(self):
+            pass
+
+    hub.network = False
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s: ("whisperkit", None))
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": whisperkit.WhisperKitEngine, "faster-whisper": FasterWhisper})
+    assert type(stt.build_stt_engine("auto")) is FasterWhisper
+    out = capsys.readouterr().out
+    assert f"could not download model {MODEL}" in out and "using faster-whisper" in out
 
 
 # --- Launching the server ------------------------------------------------------

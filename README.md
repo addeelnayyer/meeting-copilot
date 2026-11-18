@@ -12,7 +12,7 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 ## Features
 
 - **Dual-stream capture** (mic + system audio: WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux, BlackHole on macOS), Silero VAD, 1.5-2.5 s speech chunks
-- **faster-whisper**: `large-v3-turbo` on CUDA (about 360 ms per chunk on an RTX 4060), or `small` on the CPU when there is no NVIDIA GPU; German and English by default, any of Whisper's ~99 languages via `LANGUAGES` (see [Languages](#languages))
+- **Local transcription** with `large-v3-turbo`: faster-whisper on CUDA (about 360 ms per chunk on an RTX 4060), WhisperKit on the GPU of Apple Silicon Macs (about 290 ms on an M4 Max, reusing MacWhisper's model if you have it), otherwise `small` on the CPU (see [Speech recognition](#speech-recognition)); German and English by default, any of Whisper's ~99 languages via `LANGUAGES` (see [Languages](#languages))
 - **Proactive suggestions** for questions, objections and action items (1-2 sentences, ready to say)
 - **Push-to-ask**: preset buttons, global hotkeys, or a typed question ("What should I answer?")
 - **Live translation** into your language (German by default) and from it into the second one
@@ -27,7 +27,7 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 ## Requirements
 
 - Windows 10/11, Linux (PulseAudio or PipeWire) or macOS 12+
-- **Recommended:** an NVIDIA GPU (tested on an RTX 4060 Laptop, 8 GB). Without one, Whisper runs on the CPU (see [Platform notes](#platform-notes))
+- **Recommended:** an NVIDIA GPU (tested on an RTX 4060 Laptop, 8 GB) or an Apple Silicon Mac with [Homebrew](https://brew.sh). Otherwise speech recognition runs on the CPU (see [Speech recognition](#speech-recognition))
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 and all dependencies, including the CUDA libraries on Windows)
 - [Ollama](https://ollama.com) with a chat model for the offline fallback, by default `granite4:7b-a1b-h`. Any other installed model works too: every model you have pulled shows up in the AI menu in the window (or set `OLLAMA_MODEL`). The window warns when Ollama isn't running or the model is missing.
   ```sh
@@ -53,7 +53,7 @@ curl -LsSf https://raw.githubusercontent.com/masrisystems/meeting-copilot/main/i
 
 The app goes to `~/meeting-copilot` (set `MEETING_COPILOT_DIR` to change that). From a cloned repo, run `./install.sh` or `install.ps1` inside it instead. Re-run the installer to update; your `.env`, notes and sessions are kept. `--uninstall` (`-Uninstall` on Windows) removes the icons.
 
-Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. Ollama is not installed for you (see [Requirements](#requirements)).
+Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. Ollama is not installed for you (see [Requirements](#requirements)). On an Apple Silicon Mac the installer also runs `brew install whisperkit-cli` for the WhisperKit STT engine; without Homebrew it prints a hint and the copilot uses faster-whisper on the CPU.
 
 ## Manual setup
 
@@ -87,7 +87,7 @@ CUSTOM_MODEL=gh/gpt-5.1-codex
 
 Suggestions use structured JSON output. If an OpenAI-compatible endpoint doesn't support JSON schemas, the app falls back to plain JSON mode and then to prompt-only JSON automatically. For Claude, refusals on the current Opus/Sonnet models are retried on a fallback model server-side (`fallbacks: "default"`).
 
-The first run downloads the Whisper model (`large-v3-turbo`, about 1.6 GB) and the German embedding model.
+The first run downloads the STT model (`large-v3-turbo`, about 1.6 GB; on a Mac with MacWhisper its copy is used instead) and the German embedding model.
 
 ### Your own knowledge
 
@@ -107,12 +107,27 @@ The folder button in the window header opens `knowledge_base/`, and the sliders 
 | | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Meeting audio | WASAPI loopback of the default output, built in | Monitor of the default output (`@DEFAULT_MONITOR@`) via `parec`; install `pulseaudio-utils` (Arch: `libpulse`) if it is missing | No built-in loopback. Install [BlackHole](https://github.com/ExistentialAudio/BlackHole) (2ch), create a Multi-Output Device with your speakers/headphones + BlackHole in Audio MIDI Setup, and select it as the output. `LOOPBACK_DEVICE` defaults to `BlackHole` |
-| Whisper on GPU | NVIDIA, CUDA libraries installed by `uv sync` | NVIDIA, with CUDA 12 cuBLAS + cuDNN 9 installed system-wide ([faster-whisper docs](https://github.com/SYSTRAN/faster-whisper#gpu)) | not supported (CPU) |
+| Speech recognition on GPU | faster-whisper on NVIDIA, CUDA libraries installed by `uv sync` | faster-whisper on NVIDIA, with CUDA 12 cuBLAS + cuDNN 9 installed system-wide ([faster-whisper docs](https://github.com/SYSTRAN/faster-whisper#gpu)) | WhisperKit on Apple Silicon, `whisperkit-cli` from Homebrew (installed by `install.sh`); Intel Macs use the CPU |
 | Global hotkeys | yes | X11 only (not Wayland) | yes, after granting the terminal Accessibility access |
 | Always on top / opacity | yes | X11 only (not Wayland); opacity needs a compositing window manager | no (use a tool such as Rectangle Pro or Afloat) |
 | Permissions | none | none | Microphone access for the terminal |
 
-`WHISPER_DEVICE`, `WHISPER_MODEL` and `WHISPER_COMPUTE` default to `auto`: `large-v3-turbo` in `float16` when CUDA is usable, otherwise `small` in `int8` on the CPU. To keep up, a 2.5 s chunk must be transcribed in well under 2.5 s (about 1.2 s when both sides talk at once). Check your machine with `uv run python -m copilot.stt_bench recording.wav`. If it is too slow, set `WHISPER_MODEL=base` (faster, less accurate), fix `WHISPER_LANGUAGE` to skip language detection, and close other CPU-heavy apps. Apple Silicon and recent desktop CPUs usually manage `small`; low-power laptop CPUs may need `base`.
+### Speech recognition
+
+Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) picks **WhisperKit** on Apple Silicon Macs and **faster-whisper** everywhere else; set `STT_ENGINE=faster-whisper` or `STT_ENGINE=whisperkit` to force one, for example to compare them.
+
+**WhisperKit** (Apple Silicon): the copilot starts Homebrew's `whisperkit-cli serve` on a free localhost port when it starts, warms it up, and stops it when it exits. The STT model is looked up in this order:
+
+1. `WHISPERKIT_MODEL_PATH`, a model folder you set yourself
+2. [MacWhisper](https://goodsnooze.gumroad.com/l/macwhisper)'s models folder, if MacWhisper has downloaded the same model. It is only read, never changed, and only the open (MIT) Whisper model is used, never MacWhisper's Parakeet or Pro models
+3. the Hugging Face cache
+4. otherwise only that model is downloaded once from [`argmaxinc/whisperkit-coreml`](https://huggingface.co/argmaxinc/whisperkit-coreml) into the Hugging Face cache (about 1.6 GB)
+
+`WHISPERKIT_MODEL` (default `openai_whisper-large-v3-v20240930`, which is large-v3-turbo) picks another model from that repo. `WHISPERKIT_COMPUTE_UNITS` sets where the encoder and decoder run: `cpuAndGPU` (the default; about 0.3 s per chunk on an M4 Max), `cpuAndNeuralEngine` (about 0.7 s there), `all` or `cpuOnly`. Try the others with `stt_bench` on other Apple chips. The very first start can take a few minutes while Core ML prepares the model for your chip; the window says the STT engine is still loading meanwhile.
+
+**Fallback:** if `whisperkit-cli` is missing, the model can't be found or downloaded, or the server doesn't start, the copilot uses faster-whisper (on a Mac: on the CPU) and prints why. If the server crashes during a meeting, it is restarted once; after a second failure the copilot switches to faster-whisper for the rest of the run, and the window says so. The copilot never installs anything by itself.
+
+**faster-whisper** (Windows, Linux, Intel Macs and the fallback): `WHISPER_DEVICE`, `WHISPER_MODEL` and `WHISPER_COMPUTE` apply to it only and default to `auto`: `large-v3-turbo` in `float16` when CUDA is usable, otherwise `small` in `int8` on the CPU. To keep up, a 2.5 s chunk must be transcribed in well under 2.5 s (about 1.2 s when both sides talk at once). Check your machine with `uv run python -m copilot.stt_bench recording.wav` (add `--engine faster-whisper` or `--engine whisperkit` to compare). If it is too slow, set `WHISPER_MODEL=base` (faster, less accurate), fix `WHISPER_LANGUAGE` to skip language detection (this works for both engines), and close other CPU-heavy apps. Recent desktop CPUs usually manage `small`; low-power laptop CPUs may need `base`.
 
 Example for a job interview:
 ```ini
@@ -168,17 +183,17 @@ Presets (label, question, hotkey) are defined once in `PRESETS` in `copilot/conf
 ## How it works
 
 ```
-mic ──────┐                                                                   ┌─ proactive suggestions
-          ├─ Silero VAD ─ 1.5–2.5 s chunks ─ faster-whisper ─ transcript ─┼─ push-to-ask answers
-loopback ─┘   (per source)                      (CUDA)       (turns)      └─ translations
-                                                                  │
+mic ──────┐                                                                             ┌─ proactive suggestions
+          ├─ Silero VAD ─ 1.5–2.5 s chunks ─ faster-whisper or WhisperKit ─ transcript ─┼─ push-to-ask answers
+loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  (turns)     └─ translations
+                                                                                │
                 facts.json + meeting memory (5 min) + knowledge base (RAG) + last 15 turns
-                                                                  │
+                                                                                │
               Gemini | Claude | OpenAI | Grok | custom URL ──(> 2.5 s: race)── Ollama
 ```
 
 - **Chunking:** a chunk ends at a pause once it is at least 1.5 s long, and is force-cut at 2.5 s at the quietest point. Short replies ("Ja.") are still sent once the speaker stops.
-- **Transcription:** the language (one of `LANGUAGES`) is detected per speaker and re-checked every few chunks. Detecting on every chunk would add about 240 ms.
+- **Transcription:** the language (one of `LANGUAGES`) is detected per speaker and re-checked every few chunks. Detecting on every chunk would add about 240 ms. WhisperKit reports no language probabilities, so a detected language outside `LANGUAGES` is ignored and the chunk is transcribed again in the speaker's last language. WhisperKit gets no text prompt from the previous sentences (faster-whisper does): it slowed the decoder and caused repetition loops, and segments that look like a loop are dropped.
 - **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
@@ -192,7 +207,7 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
-uv run python -m copilot.stt_bench recording.wav   # VAD chunks + Whisper latency on a WAV file
+uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine faster-whisper|whisperkit)
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)

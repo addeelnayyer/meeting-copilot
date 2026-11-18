@@ -96,7 +96,7 @@ async def main(args):
         raise SystemExit(f"Port {config.PORT} is in use - is the copilot already running? "
                          f"Close it or set PORT in .env.")
     try:
-        chosen_stt_engine()  # a bad STT_ENGINE would otherwise only kill the STT thread
+        chosen_stt_engine(config.STT_ENGINE)  # a bad STT_ENGINE would otherwise only kill the STT thread
     except ValueError as e:
         raise SystemExit(f"{e} in .env.")
     loop = asyncio.get_running_loop()

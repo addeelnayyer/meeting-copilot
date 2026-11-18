@@ -321,29 +321,23 @@ def test_stt_engine_forced_and_unknown():
         stt_engine("vosk", "darwin", "arm64", *KIT)
 
 
-@pytest.mark.parametrize("binary, model, why", [
-    (None, KIT[1], "brew install whisperkit-cli"),
-    (KIT[0], None, "openai_whisper-large-v3-v20240930"),
+@pytest.mark.parametrize("settings, system, binary, model, why", [
+    (("auto", "whisperkit"), "darwin", None, KIT[1], "brew install whisperkit-cli"),
+    (("auto", "whisperkit"), "darwin", KIT[0], None, "openai_whisper-large-v3-v20240930"),
+    (("whisperkit",), "linux", *KIT, "needs macOS"),
 ])
-def test_stt_engine_falls_back_with_a_reason(binary, model, why, monkeypatch):
+def test_stt_engine_falls_back_with_a_reason(settings, system, binary, model, why, monkeypatch):
     monkeypatch.setattr(config, "WHISPERKIT_MODEL", "openai_whisper-large-v3-v20240930")
-    engine, reason = stt_engine("auto", "darwin", "arm64", binary, model)
-    assert engine == "faster-whisper" and why in reason and "requested" not in reason
-    engine, reason = stt_engine("whisperkit", "darwin", "arm64", binary, model)
-    assert engine == "faster-whisper" and why in reason and "requested" in reason
-
-
-def test_stt_engine_whisperkit_requested_off_apple_silicon_falls_back():
-    engine, reason = stt_engine("whisperkit", "linux", "x86_64", None, None)
-    assert engine == "faster-whisper" and "requested" in reason
+    for setting in settings:
+        engine, reason = stt_engine(setting, system, "arm64", binary, model)
+        assert engine == "faster-whisper" and why in reason
+        assert ("requested" in reason) == (setting == "whisperkit")
 
 
 class FakeEngine:
     def __init__(self, fail=None):
         self.fail, self.warm, self.closed = fail, False, False
-        if fail == "start":
-            raise RuntimeError("whisperkit-cli exited with code 1")
-        if fail == "health":  # the engine waits on /health while it is built
+        if fail == "start":  # the engine launches the server and waits on /health while it is built
             raise RuntimeError("whisperkit-cli not healthy after 300 s")
 
     def warm_up(self):
@@ -356,27 +350,27 @@ class FakeEngine:
 
 
 @pytest.mark.parametrize("setting", ["auto", "whisperkit"])
-@pytest.mark.parametrize("fail, why", [("start", "exited with code 1"), ("health", "not healthy"),
-                                       ("warm_up", "warm-up request failed")])
+@pytest.mark.parametrize("fail, why", [("start", "not healthy"), ("warm_up", "warm-up request failed")])
 def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
     built = []
 
     def kit():
-        built.append(FakeEngine(fail))  # only reached when start succeeds
+        built.append(FakeEngine(fail))  # only reached when the start succeeds
         return built[-1]
 
     monkeypatch.setattr(config, "STT_ENGINE", setting)
-    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s=None: ("whisperkit", None))
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s: ("whisperkit", None))
     monkeypatch.setattr(stt, "ENGINES", {"whisperkit": kit, "faster-whisper": FakeEngine})
     engine = build_stt_engine()
     assert type(engine) is FakeEngine and engine.fail is None and engine.warm
-    assert all(e.closed for e in built)  # a started-but-unhealthy server is stopped
+    if fail == "warm_up":
+        assert built[0].closed  # a started server that fails the warm-up is stopped
     out = capsys.readouterr().out
     assert why in out and ("requested" in out) == (setting == "whisperkit")
 
 
 def test_build_stt_engine_prints_the_choice_reason(monkeypatch, capsys):
-    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s=None: ("faster-whisper", "WhisperKit is unavailable: x"))
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s: ("faster-whisper", "WhisperKit is unavailable: x"))
     monkeypatch.setattr(stt, "ENGINES", {"faster-whisper": FakeEngine})
     assert build_stt_engine().warm
     assert "WhisperKit is unavailable: x" in capsys.readouterr().out

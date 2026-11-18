@@ -11,7 +11,6 @@ from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 
 from . import config
 from .segment import Segment, StickyLanguage, is_hallucination
 from . import whisperkit
-from .whisperkit import WhisperKitEngine
 
 
 def whisper_settings(cuda_devices):
@@ -43,7 +42,7 @@ def stt_engine(setting, system, machine, binary, model):
     elif not model:
         why = whisperkit.no_model()
     else:
-        return WhisperKitEngine.name, None
+        return whisperkit.WhisperKitEngine.name, None
     return FasterWhisperEngine.name, _fallback_reason(setting, why)
 
 
@@ -53,9 +52,9 @@ def _fallback_reason(setting, why):
     return f"WhisperKit is unavailable: {why}"
 
 
-def chosen_stt_engine(setting=None):
-    """stt_engine() for this machine; `setting` overrides STT_ENGINE."""
-    return stt_engine(setting or config.STT_ENGINE, sys.platform, platform.machine(),
+def chosen_stt_engine(setting):
+    """stt_engine() for this machine."""
+    return stt_engine(setting, sys.platform, platform.machine(),
                       shutil.which("whisperkit-cli"), whisperkit.model_path())
 
 
@@ -65,7 +64,7 @@ def build_stt_engine(setting=None):
     back to faster-whisper, like a missing binary or model; the reason is printed."""
     setting = setting or config.STT_ENGINE
     name, reason = chosen_stt_engine(setting)
-    if name == WhisperKitEngine.name:
+    if name == whisperkit.WhisperKitEngine.name:
         try:
             return _build_warm(ENGINES[name])
         except Exception as e:
@@ -147,7 +146,7 @@ class FasterWhisperEngine:
         pass
 
 
-ENGINES = {e.name: e for e in (FasterWhisperEngine, WhisperKitEngine)}
+ENGINES = {e.name: e for e in (FasterWhisperEngine, whisperkit.WhisperKitEngine)}
 STT_ENGINES = tuple(ENGINES)
 
 

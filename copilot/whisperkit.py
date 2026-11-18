@@ -148,9 +148,13 @@ class WhisperKitEngine:
                 return self._request(wav, lang)
             except httpx.TransportError as e:
                 self._restart(e)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500:
+                    raise
+                self._restart(e)
 
     def _restart(self, error):
-        """A crashed or unreachable server is restarted once per run; the next failure is final."""
+        """A crashed, unreachable or failing server is restarted once per run; the next failure is final."""
         try:
             self.server.check()
             reason = str(error) or type(error).__name__

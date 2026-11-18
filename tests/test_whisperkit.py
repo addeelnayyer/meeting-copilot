@@ -3,6 +3,7 @@
 import json
 import queue
 import threading
+import time
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,7 +49,7 @@ class FakeServer:
                 assert fields.pop("file").startswith(b"RIFF")
                 fields = {k: v.decode() for k, v in fields.items()}
                 fake.requests.append(fields)
-                self._send(200, fake.reply(fields))
+                self._send(fake.status, fake.reply(fields) if fake.status == 200 else {"error": "boom"})
 
             def _send(self, status, data):
                 out = json.dumps(data).encode()
@@ -61,6 +62,7 @@ class FakeServer:
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
         self.closed = self.dead = False
+        self.status = 200  # of transcription replies
         threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
 
     # The engine's view of a launched whisperkit-cli server.
@@ -276,6 +278,9 @@ def worker(monkeypatch):
     chunks, segments, statuses, stop = queue.Queue(), queue.Queue(), [], threading.Event()
     w = stt.SttWorker(chunks, segments.put, stop, on_status=statuses.append)
     w.start()
+    deadline = time.monotonic() + 10
+    while not statuses and time.monotonic() < deadline:  # warmed up on the first server
+        time.sleep(0.01)
 
     def transcribe(c=None):
         chunks.put(c or chunk())
@@ -327,3 +332,11 @@ def test_failed_restart_switches_to_faster_whisper(worker):
     worker.launcher.servers[-1].kill()
     assert worker.transcribe() == "from faster-whisper"
     assert "not on the PATH" in worker.statuses[-1]["note"]
+
+
+def test_server_errors_count_as_failures(worker):
+    worker.launcher.servers[-1].status = 500
+    assert worker.transcribe() == "Hello there."  # restarted
+    worker.launcher.servers[-1].status = 500
+    assert worker.transcribe() == "from faster-whisper"
+    assert "500" in worker.statuses[-1]["note"]

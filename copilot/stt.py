@@ -112,12 +112,16 @@ class SttWorker(threading.Thread):
         self.on_segment = on_segment
         self.stop_event = stop_event
         self.on_status = on_status or (lambda status: None)
+        self.engine = None
 
     def run(self):
         self.engine = build_stt_engine()
         try:
-            self.engine.warm_up()
-            self.on_status({"ready": True, "engine": self.engine.name})
+            try:
+                self.engine.warm_up()
+                self.on_status({"ready": True, "engine": self.engine.name})
+            except EngineFailed as e:
+                self._switch(e)
             while not self.stop_event.is_set():
                 try:
                     chunk = self.in_queue.get(timeout=0.2)
@@ -144,6 +148,10 @@ class SttWorker(threading.Thread):
         self.engine.close()
         note = f"{failed} ausgefallen ({error}), STT jetzt mit {fallback}"
         self.on_status({"ready": False, "engine": fallback, "note": note})
-        self.engine = build_stt_engine(fallback)
-        self.engine.warm_up()
+        try:
+            self.engine = build_stt_engine(fallback)
+            self.engine.warm_up()
+        except Exception as e:
+            self.on_status({"ready": False, "engine": fallback, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
+            raise
         self.on_status({"ready": True, "engine": fallback, "note": note})

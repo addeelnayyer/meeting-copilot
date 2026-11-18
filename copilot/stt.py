@@ -1,13 +1,16 @@
 """STT worker: one STT engine, chunks from both sources, labelled segments out."""
 
+import platform
 import queue
+import shutil
+import sys
 import threading
 import time
 
 from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 loads)
 from . import config
 from .segment import Segment, StickyLanguage, is_hallucination
-from .whisperkit import WhisperKitEngine
+from . import whisperkit
 
 
 def whisper_settings(cuda_devices):
@@ -23,20 +26,62 @@ def whisper_settings(cuda_devices):
     return model, device, compute
 
 
-def stt_engine():
-    """The STT engine named by STT_ENGINE; "auto" is faster-whisper on every platform for now."""
-    engine = config.STT_ENGINE
-    if engine == "auto":
-        return FasterWhisperEngine.name
-    if engine not in STT_ENGINES:
-        raise ValueError(f"STT_ENGINE={engine!r}: use auto, {' or '.join(STT_ENGINES)}")
+def stt_engine(setting, system, machine, binary, model):
+    """(engine, reason) for STT_ENGINE `setting` on this platform (sys.platform, platform.machine()),
+    given the whisperkit-cli path and the WhisperKit model folder (None when missing). `auto` is
+    WhisperKit only on macOS arm64; reason says why WhisperKit was wanted but is not used."""
+    if setting not in ("auto", *STT_ENGINES):
+        raise ValueError(f"STT_ENGINE={setting!r}: use auto, {' or '.join(STT_ENGINES)}")
+    wanted = setting == "whisperkit" or (setting == "auto" and system == "darwin" and machine == "arm64")
+    if not wanted:
+        return FasterWhisperEngine.name, None
+    if system != "darwin":
+        why = "it needs macOS"
+    elif not binary:
+        why = whisperkit.NO_BINARY
+    elif not model:
+        why = whisperkit.no_model()
+    else:
+        return whisperkit.WhisperKitEngine.name, None
+    return FasterWhisperEngine.name, _fallback_reason(setting, why)
+
+
+def _fallback_reason(setting, why):
+    if setting == "whisperkit":
+        return f"WhisperKit was requested but is unavailable: {why}"
+    return f"WhisperKit is unavailable: {why}"
+
+
+def chosen_stt_engine(setting):
+    """stt_engine() for this machine."""
+    return stt_engine(setting, sys.platform, platform.machine(),
+                      shutil.which("whisperkit-cli"), whisperkit.model_path())
+
+
+def build_stt_engine(setting=None):
+    """Build and warm up the chosen STT engine (`setting` overrides STT_ENGINE) once; it then
+    serves transcribe(chunk) and close(). WhisperKit that fails to start or become healthy falls
+    back to faster-whisper, like a missing binary or model; the reason is printed."""
+    setting = setting or config.STT_ENGINE
+    name, reason = chosen_stt_engine(setting)
+    if name == whisperkit.WhisperKitEngine.name:
+        try:
+            return _build_warm(ENGINES[name])
+        except Exception as e:
+            name, reason = FasterWhisperEngine.name, _fallback_reason(setting, e)
+    if reason:
+        print(f"STT: {reason}; using {FasterWhisperEngine.name}")
+    return _build_warm(ENGINES[name])
+
+
+def _build_warm(engine_class):
+    engine = engine_class()
+    try:
+        engine.warm_up()
+    except BaseException:
+        engine.close()
+        raise
     return engine
-
-
-def build_stt_engine(engine=None):
-    """Build the chosen STT engine (or `engine`) once: it loads its STT model and then serves
-    warm_up(), transcribe(chunk) and close()."""
-    return ENGINES[engine or stt_engine()]()
 
 
 class FasterWhisperEngine:
@@ -101,7 +146,7 @@ class FasterWhisperEngine:
         pass
 
 
-ENGINES = {e.name: e for e in (FasterWhisperEngine, WhisperKitEngine)}
+ENGINES = {e.name: e for e in (FasterWhisperEngine, whisperkit.WhisperKitEngine)}
 STT_ENGINES = tuple(ENGINES)
 
 
@@ -116,7 +161,6 @@ class SttWorker(threading.Thread):
     def run(self):
         engine = build_stt_engine()
         try:
-            engine.warm_up()
             if self.on_ready:
                 self.on_ready()
             while not self.stop_event.is_set():

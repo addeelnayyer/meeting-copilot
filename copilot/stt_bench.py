@@ -39,9 +39,8 @@ def main(path, source="Participant", engine=None):
 
     t = time.perf_counter()
     stt = build_stt_engine(engine)
-    print(f"model load {time.perf_counter() - t:.1f}s")
+    print(f"model load and warm-up {time.perf_counter() - t:.1f}s")
     try:
-        stt.warm_up()
         lat = []
         for c in chunks:
             t = time.perf_counter()

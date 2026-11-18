@@ -25,6 +25,13 @@ MACWHISPER_MODELS = (Path.home() / "Library/Application Support/MacWhisper/model
                      / "argmaxinc/whisperkit-coreml")
 
 
+NO_BINARY = "whisperkit-cli is not on the PATH (brew install whisperkit-cli)"
+
+
+def no_model():
+    return f"model {config.WHISPERKIT_MODEL} is neither in WHISPERKIT_MODEL_PATH nor in {MACWHISPER_MODELS}"
+
+
 def model_path():
     """The folder of the WHISPERKIT_MODEL STT model, or None when it is in no known place."""
     candidates = [Path(config.WHISPERKIT_MODEL_PATH).expanduser()] if config.WHISPERKIT_MODEL_PATH else []
@@ -64,7 +71,7 @@ class Server:
     def __init__(self, model):
         binary = shutil.which("whisperkit-cli")
         if not binary:
-            raise RuntimeError("whisperkit-cli is not on the PATH (brew install whisperkit-cli)")
+            raise RuntimeError(NO_BINARY)
         port = free_port()
         self.url = f"http://{HOST}:{port}"
         config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,8 +105,7 @@ class WhisperKitEngine:
         if url is None:
             model = model_path()
             if model is None:
-                raise RuntimeError(f"WhisperKit model {config.WHISPERKIT_MODEL} is neither in "
-                                   f"WHISPERKIT_MODEL_PATH nor in {MACWHISPER_MODELS}")
+                raise RuntimeError(f"WhisperKit {no_model()}")
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
             self.server = Server(model)
             url = self.server.url

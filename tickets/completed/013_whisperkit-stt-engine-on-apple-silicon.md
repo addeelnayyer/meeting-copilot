@@ -27,10 +27,10 @@ A second STT engine, WhisperKit, runs large-v3-turbo on the Apple GPU. `STT_ENGI
 
 ## Akzeptanzkriterien
 - [x] Step 0: WhisperKit beats faster-whisper `small` on Apple Silicon (see Kommentare).
-- [x] `STT_ENGINE=auto` picks WhisperKit on macOS arm64 and faster-whisper elsewhere, with a reason when it falls back (#4).
-- [x] MacWhisper's model is reused as is; without it the model is downloaded once (#3, #5).
-- [x] A crashed server is restarted once, then the run continues on faster-whisper (#6).
-- [x] Installer, `.env.example`, README and CLAUDE.md describe the engine, its settings and the fallback (#7).
+- [x] `STT_ENGINE=auto` picks WhisperKit on macOS arm64 and faster-whisper elsewhere, with a reason when it falls back (issue 4).
+- [x] MacWhisper's model is reused as is; without it the model is downloaded once (issues 3, 5).
+- [x] A crashed server is restarted once, then the run continues on faster-whisper (issue 6).
+- [x] Installer, `.env.example`, README and CLAUDE.md describe the engine, its settings and the fallback (issue 7).
 - [ ] Tested in a real meeting, on other Apple chips, and with MacWhisper running at the same time.
 
 ## Risiken

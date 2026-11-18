@@ -73,7 +73,7 @@ mkdir -p knowledge_base
 step "Downloading the embedding model for your notes"
 "$UV" run python -m copilot.rag download
 if [ "$OS" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
-  # WhisperKit STT engine (Neural Engine/GPU); without it the app uses faster-whisper on the CPU.
+  # WhisperKit STT engine (Apple GPU); without it the app uses faster-whisper on the CPU.
   BREW=$(command -v brew || true)
   [ -n "$BREW" ] || [ ! -x /opt/homebrew/bin/brew ] || BREW=/opt/homebrew/bin/brew
   if [ -n "$BREW" ]; then
@@ -85,7 +85,7 @@ if [ "$OS" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
     echo "Tip: for faster, more accurate transcription install Homebrew (https://brew.sh) and run: brew install whisperkit-cli"
   fi
 fi
-step "Preparing the STT model (about 1.6 GB with an NVIDIA GPU or WhisperKit, less on the CPU)"
+step "Preparing the STT model (about 1.6 GB with an NVIDIA GPU or WhisperKit, less on the CPU; WhisperKit's first start can take minutes)"
 "$UV" run python -c "from copilot.stt import build_stt_engine; build_stt_engine().close()" \
   || echo "Could not load the STT model now; it is downloaded on the first start instead."
 

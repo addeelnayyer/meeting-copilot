@@ -304,7 +304,7 @@ def test_whisper_auto_picks_gpu_or_cpu_defaults(monkeypatch):
     assert whisper_settings(1) == ("base", "cpu", "int8")
 
 
-KIT = ("/opt/homebrew/bin/whisperkit-cli", "/models/openai_whisper-large-v3-v20240930")
+KIT = ("/opt/homebrew/bin/whisperkit-cli",)
 
 
 def test_stt_engine_auto_is_whisperkit_only_on_apple_silicon():
@@ -321,15 +321,14 @@ def test_stt_engine_forced_and_unknown():
         stt_engine("vosk", "darwin", "arm64", *KIT)
 
 
-@pytest.mark.parametrize("settings, system, binary, model, why", [
-    (("auto", "whisperkit"), "darwin", None, KIT[1], "brew install whisperkit-cli"),
-    (("auto", "whisperkit"), "darwin", KIT[0], None, "openai_whisper-large-v3-v20240930"),
+@pytest.mark.parametrize("settings, system, binary, why", [
+    (("auto", "whisperkit"), "darwin", None, "brew install whisperkit-cli"),
     (("whisperkit",), "linux", *KIT, "needs macOS"),
 ])
-def test_stt_engine_falls_back_with_a_reason(settings, system, binary, model, why, monkeypatch):
-    monkeypatch.setattr(config, "WHISPERKIT_MODEL", "openai_whisper-large-v3-v20240930")
+def test_stt_engine_falls_back_with_a_reason(settings, system, binary, why):
+    # A model found nowhere is no reason: the engine downloads it (a failed download falls back).
     for setting in settings:
-        engine, reason = stt_engine(setting, system, "arm64", binary, model)
+        engine, reason = stt_engine(setting, system, "arm64", binary)
         assert engine == "faster-whisper" and why in reason
         assert ("requested" in reason) == (setting == "whisperkit")
 

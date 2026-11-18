@@ -12,7 +12,8 @@ from copilot.llm import LLM, SUGGESTION_SCHEMA, parse_json
 from copilot.providers import GeminiProvider, Provider
 from copilot.rag import split_text
 from copilot.hotkeys import to_pynput, to_win32
-from copilot.stt import Segment, is_hallucination, stt_engine, whisper_settings
+from copilot import stt
+from copilot.stt import Segment, build_stt_engine, is_hallucination, stt_engine, whisper_settings
 from copilot.transcript import Transcript
 from copilot.vad import Chunker
 
@@ -303,15 +304,76 @@ def test_whisper_auto_picks_gpu_or_cpu_defaults(monkeypatch):
     assert whisper_settings(1) == ("base", "cpu", "int8")
 
 
-def test_stt_engine_resolves_auto_and_rejects_unknown(monkeypatch):
-    monkeypatch.setattr(config, "STT_ENGINE", "auto")
-    assert stt_engine() == "faster-whisper"
-    for name in ("faster-whisper", "whisperkit"):
-        monkeypatch.setattr(config, "STT_ENGINE", name)
-        assert stt_engine() == name
-    monkeypatch.setattr(config, "STT_ENGINE", "vosk")
+KIT = ("/opt/homebrew/bin/whisperkit-cli", "/models/openai_whisper-large-v3-v20240930")
+
+
+def test_stt_engine_auto_is_whisperkit_only_on_apple_silicon():
+    assert stt_engine("auto", "darwin", "arm64", *KIT) == ("whisperkit", None)
+    for system, machine in [("darwin", "x86_64"), ("win32", "AMD64"), ("win32", "ARM64"),
+                            ("linux", "x86_64"), ("linux", "aarch64")]:
+        assert stt_engine("auto", system, machine, *KIT) == ("faster-whisper", None)
+
+
+def test_stt_engine_forced_and_unknown():
+    assert stt_engine("faster-whisper", "darwin", "arm64", *KIT) == ("faster-whisper", None)
+    assert stt_engine("whisperkit", "darwin", "arm64", *KIT) == ("whisperkit", None)
     with pytest.raises(ValueError, match="STT_ENGINE"):
-        stt_engine()
+        stt_engine("vosk", "darwin", "arm64", *KIT)
+
+
+@pytest.mark.parametrize("settings, system, binary, model, why", [
+    (("auto", "whisperkit"), "darwin", None, KIT[1], "brew install whisperkit-cli"),
+    (("auto", "whisperkit"), "darwin", KIT[0], None, "openai_whisper-large-v3-v20240930"),
+    (("whisperkit",), "linux", *KIT, "needs macOS"),
+])
+def test_stt_engine_falls_back_with_a_reason(settings, system, binary, model, why, monkeypatch):
+    monkeypatch.setattr(config, "WHISPERKIT_MODEL", "openai_whisper-large-v3-v20240930")
+    for setting in settings:
+        engine, reason = stt_engine(setting, system, "arm64", binary, model)
+        assert engine == "faster-whisper" and why in reason
+        assert ("requested" in reason) == (setting == "whisperkit")
+
+
+class FakeEngine:
+    def __init__(self, fail=None):
+        self.fail, self.warm, self.closed = fail, False, False
+        if fail == "start":  # the engine launches the server and waits on /health while it is built
+            raise RuntimeError("whisperkit-cli not healthy after 300 s")
+
+    def warm_up(self):
+        if self.fail == "warm_up":
+            raise RuntimeError("warm-up request failed")
+        self.warm = True
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("setting", ["auto", "whisperkit"])
+@pytest.mark.parametrize("fail, why", [("start", "not healthy"), ("warm_up", "warm-up request failed")])
+def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
+    built = []
+
+    def kit():
+        built.append(FakeEngine(fail))  # only reached when the start succeeds
+        return built[-1]
+
+    monkeypatch.setattr(config, "STT_ENGINE", setting)
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s: ("whisperkit", None))
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": kit, "faster-whisper": FakeEngine})
+    engine = build_stt_engine()
+    assert type(engine) is FakeEngine and engine.fail is None and engine.warm
+    if fail == "warm_up":
+        assert built[0].closed  # a started server that fails the warm-up is stopped
+    out = capsys.readouterr().out
+    assert why in out and ("requested" in out) == (setting == "whisperkit")
+
+
+def test_build_stt_engine_prints_the_choice_reason(monkeypatch, capsys):
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda s: ("faster-whisper", "WhisperKit is unavailable: x"))
+    monkeypatch.setattr(stt, "ENGINES", {"faster-whisper": FakeEngine})
+    assert build_stt_engine().warm
+    assert "WhisperKit is unavailable: x" in capsys.readouterr().out
 
 
 def test_hotkeys_convert_to_pynput_format():

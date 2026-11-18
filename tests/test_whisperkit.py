@@ -268,6 +268,7 @@ def worker(monkeypatch):
         fallbacks.append(FakeFasterWhisper())
         return fallbacks[-1]
 
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda setting: (setting, None))  # no Mac needed
     monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda: whisperkit.WhisperKitEngine(launch=launcher),
                                          "faster-whisper": fallback})
     chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()

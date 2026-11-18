@@ -129,7 +129,7 @@ async def main(args):
         chunks,
         on_segment=lambda seg: loop.call_soon_threadsafe(assistant.on_segment, seg),
         stop_event=stop,
-        on_ready=lambda: loop.call_soon_threadsafe(hub.publish, {"type": "stt", "ready": True}),
+        on_status=lambda status: loop.call_soon_threadsafe(hub.publish, {"type": "stt", **status}),
     )
     stt.start()
     if args.start:

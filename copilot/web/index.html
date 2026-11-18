@@ -109,6 +109,7 @@
   <span id="lat"></span>
   <span id="cnote" style="color:var(--warn)"></span>
   <span id="stt" class="badge off">STT lädt</span>
+  <span id="snote" style="color:var(--warn)"></span>
   <span class="meter" title="Du (Mikrofon)">
     <svg viewBox="0 0 24 24" fill="none" stroke="var(--user)" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
     <span class="bar"><i id="lv-User" style="background:var(--user)"></i></span>
@@ -361,7 +362,8 @@ const handlers = {
     e.className = "badge " + (ev.engine === "ollama" ? "ollama" : "cloud");
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
   stt: (ev) => { const e = $("stt"); e.textContent = ev.ready ? "STT bereit" : "STT lädt";
-    e.className = "badge" + (ev.ready ? "" : " off"); },
+    e.className = "badge" + (ev.ready ? "" : " off"); e.title = ev.engine || "";
+    $("snote").textContent = ev.note || ""; },
   levels: (ev) => { for (const k of ["User", "Participant"])
     $("lv-" + k).style.width = Math.min(100, Math.sqrt(ev[k]) * 300) + "%";
     $("cnote").textContent = ev.cloud_note || "";

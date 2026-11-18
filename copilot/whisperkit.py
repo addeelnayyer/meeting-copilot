@@ -34,11 +34,11 @@ def model_path():
     """The folder of the WHISPERKIT_MODEL STT model: WHISPERKIT_MODEL_PATH, then MacWhisper's
     folder, then the Hugging Face cache. When it is in none of them, only that model's subfolder
     is downloaded into the Hugging Face cache; RuntimeError when the download fails."""
-    override = config.WHISPERKIT_MODEL_PATH
-    if override:
-        if _is_model(Path(override).expanduser()):
-            return Path(override).expanduser()
-        print(f"STT: WHISPERKIT_MODEL_PATH={override} holds no WhisperKit model; looking elsewhere")
+    if config.WHISPERKIT_MODEL_PATH:
+        own = Path(config.WHISPERKIT_MODEL_PATH).expanduser()
+        if _is_model(own):
+            return own
+        print(f"STT: WHISPERKIT_MODEL_PATH={own} holds no WhisperKit model; looking elsewhere")
     mac = MACWHISPER_MODELS / config.WHISPERKIT_MODEL
     if _is_model(mac):
         return mac
@@ -49,11 +49,13 @@ def _is_model(folder):
     return (folder / "AudioEncoder.mlmodelc").is_dir()
 
 
-def _snapshot(**kwargs):
+def _snapshot(model, **kwargs):
+    """The model folder of an argmaxinc/whisperkit-coreml snapshot with only that subfolder;
+    None when the snapshot has no such model."""
     import huggingface_hub
 
-    return Path(huggingface_hub.snapshot_download(HF_REPO, allow_patterns=f"{config.WHISPERKIT_MODEL}/*",
-                                                  **kwargs)) / config.WHISPERKIT_MODEL
+    folder = Path(huggingface_hub.snapshot_download(HF_REPO, allow_patterns=f"{model}/*", **kwargs)) / model
+    return folder if _is_model(folder) else None
 
 
 def _cached_model():
@@ -62,26 +64,25 @@ def _cached_model():
     from huggingface_hub.errors import LocalEntryNotFoundError  # also an incomplete snapshot
 
     try:
-        folder = _snapshot(local_files_only=True)
+        return _snapshot(config.WHISPERKIT_MODEL, local_files_only=True)
     except LocalEntryNotFoundError:
         return None
-    return folder if _is_model(folder) else None
 
 
 def _download_model():
     model = config.WHISPERKIT_MODEL
     print(f"STT: downloading WhisperKit model {model} from {HF_REPO} into the Hugging Face cache (once)")
     try:
-        folder = _snapshot()
+        folder = _snapshot(model)
     except Exception as e:  # also without a network: then it is a LocalEntryNotFoundError
         raise RuntimeError(f"could not download model {model} from {HF_REPO}: {e}") from e
-    if not _is_model(folder):
+    if folder is None:
         raise RuntimeError(f"{HF_REPO} has no model {model} (WHISPERKIT_MODEL)")
     return folder
 
 
 def server_command(binary, model, port):
-    """whisperkit-cli serve on localhost; --model-path, so it never downloads by itself."""
+    """whisperkit-cli serve on localhost; --model-path, so it never downloads the model by itself."""
     units = config.WHISPERKIT_COMPUTE_UNITS
     return [str(binary), "serve", "--model-path", str(model), "--host", HOST, "--port", str(port),
             "--temperature-fallback-count", "0",  # fallback re-decodes double latency on short chunks

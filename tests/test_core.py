@@ -304,26 +304,26 @@ def test_whisper_auto_picks_gpu_or_cpu_defaults(monkeypatch):
     assert whisper_settings(1) == ("base", "cpu", "int8")
 
 
-KIT = ("/opt/homebrew/bin/whisperkit-cli",)
+KIT = "/opt/homebrew/bin/whisperkit-cli"
 
 
 def test_stt_engine_auto_is_whisperkit_only_on_apple_silicon():
-    assert stt_engine("auto", "darwin", "arm64", *KIT) == ("whisperkit", None)
+    assert stt_engine("auto", "darwin", "arm64", KIT) == ("whisperkit", None)
     for system, machine in [("darwin", "x86_64"), ("win32", "AMD64"), ("win32", "ARM64"),
                             ("linux", "x86_64"), ("linux", "aarch64")]:
-        assert stt_engine("auto", system, machine, *KIT) == ("faster-whisper", None)
+        assert stt_engine("auto", system, machine, KIT) == ("faster-whisper", None)
 
 
 def test_stt_engine_forced_and_unknown():
-    assert stt_engine("faster-whisper", "darwin", "arm64", *KIT) == ("faster-whisper", None)
-    assert stt_engine("whisperkit", "darwin", "arm64", *KIT) == ("whisperkit", None)
+    assert stt_engine("faster-whisper", "darwin", "arm64", KIT) == ("faster-whisper", None)
+    assert stt_engine("whisperkit", "darwin", "arm64", KIT) == ("whisperkit", None)
     with pytest.raises(ValueError, match="STT_ENGINE"):
-        stt_engine("vosk", "darwin", "arm64", *KIT)
+        stt_engine("vosk", "darwin", "arm64", KIT)
 
 
 @pytest.mark.parametrize("settings, system, binary, why", [
     (("auto", "whisperkit"), "darwin", None, "brew install whisperkit-cli"),
-    (("whisperkit",), "linux", *KIT, "needs macOS"),
+    (("whisperkit",), "linux", KIT, "needs macOS"),
 ])
 def test_stt_engine_falls_back_with_a_reason(settings, system, binary, why):
     # A model found nowhere is no reason: the engine downloads it (a failed download falls back).

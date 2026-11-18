@@ -147,12 +147,6 @@ def test_model_search_order(tmp_path, hub, monkeypatch, capsys):
     assert len(hub.downloads) == 1
 
 
-def test_a_failed_download_names_the_model(hub):
-    hub.network = False
-    with pytest.raises(RuntimeError, match=f"download.*{MODEL}"):
-        whisperkit.model_path()
-
-
 def test_a_failed_download_falls_back_to_faster_whisper_with_the_reason(hub, monkeypatch, capsys):
     class FasterWhisper:
         def warm_up(self):

@@ -1,15 +1,15 @@
 """Run a recording through the real VAD chunker + the STT engine and print per-chunk latency.
 
-    python -m copilot.stt_bench path/to/audio.wav [Participant|User]
+    python -m copilot.stt_bench path/to/audio.wav [Participant|User] [--engine faster-whisper|whisperkit]
 """
 
-import sys
+import argparse
 import time
 
 import numpy as np
 
 from . import config
-from .stt import build_stt_engine
+from .stt import STT_ENGINES, build_stt_engine
 from .vad import Chunker, SileroStream
 
 
@@ -26,7 +26,7 @@ def read_wav(path):
     return soxr.resample(pcm, rate, config.SAMPLE_RATE).astype(np.float32)
 
 
-def main(path, source="Participant"):
+def main(path, source="Participant", engine=None):
     audio = read_wav(path)
     vad, chunker = SileroStream(), Chunker(source)
     F = config.VAD_FRAME
@@ -38,18 +38,25 @@ def main(path, source="Participant"):
     print(f"{len(chunks)} chunks, durations {[round(c.duration, 2) for c in chunks]}")
 
     t = time.perf_counter()
-    stt = build_stt_engine()
+    stt = build_stt_engine(engine)
     print(f"model load {time.perf_counter() - t:.1f}s")
-    stt.warm_up()
-
-    lat = []
-    for c in chunks:
-        t = time.perf_counter()
-        seg = stt.transcribe(c)
-        lat.append(time.perf_counter() - t)
-        print(f"{c.duration:4.2f}s audio  {lat[-1] * 1000:5.0f} ms  [{seg.lang if seg else '--'}] {seg.text if seg else ''}")
-    print(f"\nmedian {np.median(lat) * 1000:.0f} ms, p95 {np.percentile(lat, 95) * 1000:.0f} ms")
+    try:
+        stt.warm_up()
+        lat = []
+        for c in chunks:
+            t = time.perf_counter()
+            seg = stt.transcribe(c)
+            lat.append(time.perf_counter() - t)
+            print(f"{c.duration:4.2f}s audio  {lat[-1] * 1000:5.0f} ms  [{seg.lang if seg else '--'}] {seg.text if seg else ''}")
+        print(f"\nmedian {np.median(lat) * 1000:.0f} ms, p95 {np.percentile(lat, 95) * 1000:.0f} ms")
+    finally:
+        stt.close()
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    p = argparse.ArgumentParser(prog="python -m copilot.stt_bench")
+    p.add_argument("path")
+    p.add_argument("source", nargs="?", default="Participant", choices=("Participant", "User"))
+    p.add_argument("--engine", choices=STT_ENGINES, help="default: STT_ENGINE from .env")
+    a = p.parse_args()
+    main(a.path, a.source, a.engine)

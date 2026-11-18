@@ -5,6 +5,7 @@ import asyncio
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -192,6 +193,9 @@ def cli():
     if args.log:  # desktop launchers have no terminal (pythonw on Windows has no stdout at all)
         Path(args.log).parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(args.log, "a", encoding="utf-8", buffering=1)
+    # uvicorn re-raises the signal it shut down on; SIGTERM's default action would kill the process
+    # without the cleanup (meeting record, WhisperKit server) that Ctrl+C gets.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         asyncio.run(main(args))
     except KeyboardInterrupt:

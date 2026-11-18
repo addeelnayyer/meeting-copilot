@@ -56,9 +56,6 @@ def whisper_settings(cuda_devices):
     return model, device, compute
 
 
-STT_ENGINES = ("faster-whisper", "whisperkit")
-
-
 def stt_engine():
     """The STT engine named by STT_ENGINE; "auto" is faster-whisper on every platform for now."""
     engine = config.STT_ENGINE
@@ -69,12 +66,10 @@ def stt_engine():
     return engine
 
 
-def build_stt_engine():
-    """Build the chosen STT engine once: it loads its STT model and then serves transcribe(chunk)."""
-    engine = stt_engine()
-    if engine not in ENGINES:
-        print(f"STT: {engine} is not available yet, using {FasterWhisperEngine.name}")
-    return ENGINES.get(engine, FasterWhisperEngine)()
+def build_stt_engine(engine=None):
+    """Build the chosen STT engine (or `engine`) once: it loads its STT model and then serves
+    warm_up(), transcribe(chunk) and close()."""
+    return ENGINES[engine or stt_engine()]()
 
 
 class FasterWhisperEngine:
@@ -141,8 +136,18 @@ class FasterWhisperEngine:
         self._last_text[chunk.source] = (self._last_text.get(chunk.source, "") + " " + text)[-1000:]
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)
 
+    def close(self):
+        pass
 
-ENGINES = {FasterWhisperEngine.name: FasterWhisperEngine}
+
+def _whisperkit_engine():
+    from .whisperkit import WhisperKitEngine  # imports this module
+
+    return WhisperKitEngine()
+
+
+ENGINES = {FasterWhisperEngine.name: FasterWhisperEngine, "whisperkit": _whisperkit_engine}
+STT_ENGINES = tuple(ENGINES)
 
 
 class SttWorker(threading.Thread):
@@ -155,15 +160,18 @@ class SttWorker(threading.Thread):
 
     def run(self):
         engine = build_stt_engine()
-        engine.warm_up()
-        if self.on_ready:
-            self.on_ready()
-        while not self.stop_event.is_set():
-            try:
-                chunk = self.in_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            seg = engine.transcribe(chunk)
-            if seg:
-                seg.latency = time.monotonic() - chunk.t_end
-                self.on_segment(seg)
+        try:
+            engine.warm_up()
+            if self.on_ready:
+                self.on_ready()
+            while not self.stop_event.is_set():
+                try:
+                    chunk = self.in_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                seg = engine.transcribe(chunk)
+                if seg:
+                    seg.latency = time.monotonic() - chunk.t_end
+                    self.on_segment(seg)
+        finally:
+            engine.close()

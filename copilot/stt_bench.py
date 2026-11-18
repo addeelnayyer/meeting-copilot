@@ -1,4 +1,4 @@
-"""Run a recording through the real VAD chunker + Whisper and print per-chunk latency.
+"""Run a recording through the real VAD chunker + the STT engine and print per-chunk latency.
 
     python -m copilot.stt_bench path/to/audio.wav [Participant|User]
 """
@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from . import config
-from .stt import Transcriber
+from .stt import build_stt_engine
 from .vad import Chunker, SileroStream
 
 
@@ -38,9 +38,9 @@ def main(path, source="Participant"):
     print(f"{len(chunks)} chunks, durations {[round(c.duration, 2) for c in chunks]}")
 
     t = time.perf_counter()
-    stt = Transcriber()
+    stt = build_stt_engine()
     print(f"model load {time.perf_counter() - t:.1f}s")
-    stt.transcribe(chunks[0])  # warm-up (CUDA kernels)
+    stt.warm_up()
 
     lat = []
     for c in chunks:

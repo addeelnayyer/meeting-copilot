@@ -23,7 +23,7 @@ from .llm import LLM
 from .memory import Memory
 from .rag import KnowledgeBase
 from .server import Hub, create_app
-from .stt import SttWorker
+from .stt import SttWorker, stt_engine
 from .transcript import Transcript
 from .vad import VadWorker
 from .window import Window
@@ -94,6 +94,10 @@ async def main(args):
             return
         raise SystemExit(f"Port {config.PORT} is in use - is the copilot already running? "
                          f"Close it or set PORT in .env.")
+    try:
+        stt_engine()  # a bad STT_ENGINE would otherwise only kill the STT thread
+    except ValueError as e:
+        raise SystemExit(f"{e} in .env.")
     loop = asyncio.get_running_loop()
     hub = Hub()
     stop = threading.Event()

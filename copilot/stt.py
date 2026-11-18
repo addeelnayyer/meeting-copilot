@@ -1,4 +1,4 @@
-"""faster-whisper worker: one GPU model, chunks from both sources, labelled segments out."""
+"""STT worker: one STT engine, chunks from both sources, labelled segments out."""
 
 import queue
 import threading
@@ -56,13 +56,36 @@ def whisper_settings(cuda_devices):
     return model, device, compute
 
 
-class Transcriber:
+STT_ENGINES = ("faster-whisper", "whisperkit")
+
+
+def stt_engine():
+    """The STT engine named by STT_ENGINE; "auto" is faster-whisper on every platform for now."""
+    engine = config.STT_ENGINE
+    if engine == "auto":
+        return FasterWhisperEngine.name
+    if engine not in STT_ENGINES:
+        raise ValueError(f"STT_ENGINE={engine!r}: use auto, {' or '.join(STT_ENGINES)}")
+    return engine
+
+
+def build_stt_engine():
+    """Build the chosen STT engine once: it loads its STT model and then serves transcribe(chunk)."""
+    engine = stt_engine()
+    if engine not in ENGINES:
+        print(f"STT: {engine} is not available yet, using {FasterWhisperEngine.name}")
+    return ENGINES.get(engine, FasterWhisperEngine)()
+
+
+class FasterWhisperEngine:
+    name = "faster-whisper"
+
     def __init__(self):
         import ctranslate2
         from faster_whisper import WhisperModel
 
         model, device, compute = whisper_settings(ctranslate2.get_cuda_device_count())
-        print(f"Whisper:  {model} on {device} ({compute})")
+        print(f"STT: {self.name} {model} ({device}, {compute})")
         args = (model,)
         kwargs = {"device": device, "compute_type": compute}
         try:
@@ -74,6 +97,12 @@ class Transcriber:
         self._last_text = {}
         self._lang = {}  # sticky language per source
         self._count = {}
+
+    def warm_up(self):
+        """The first call is slow (CUDA compiles kernels, ~5 s); do it before the meeting audio arrives."""
+        import numpy as np
+
+        list(self.model.transcribe(np.zeros(config.SAMPLE_RATE, dtype=np.float32), language="de")[0])
 
     def _language(self, chunk):
         """Language detection costs a full extra encoder pass (~240 ms on a 4060), so it
@@ -113,6 +142,9 @@ class Transcriber:
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)
 
 
+ENGINES = {FasterWhisperEngine.name: FasterWhisperEngine}
+
+
 class SttWorker(threading.Thread):
     def __init__(self, in_queue, on_segment, stop_event, on_ready=None):
         super().__init__(daemon=True, name="stt")
@@ -122,11 +154,8 @@ class SttWorker(threading.Thread):
         self.on_ready = on_ready
 
     def run(self):
-        transcriber = Transcriber()
-        # The first call is slow (CUDA compiles kernels, ~5 s); do it before the meeting audio arrives.
-        import numpy as np
-
-        list(transcriber.model.transcribe(np.zeros(config.SAMPLE_RATE, dtype=np.float32), language="de")[0])
+        engine = build_stt_engine()
+        engine.warm_up()
         if self.on_ready:
             self.on_ready()
         while not self.stop_event.is_set():
@@ -134,7 +163,7 @@ class SttWorker(threading.Thread):
                 chunk = self.in_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            seg = transcriber.transcribe(chunk)
+            seg = engine.transcribe(chunk)
             if seg:
                 seg.latency = time.monotonic() - chunk.t_end
                 self.on_segment(seg)

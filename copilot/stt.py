@@ -63,7 +63,7 @@ def stt_engine():
     """The STT engine named by STT_ENGINE; "auto" is faster-whisper on every platform for now."""
     engine = config.STT_ENGINE
     if engine == "auto":
-        return "faster-whisper"
+        return FasterWhisperEngine.name
     if engine not in STT_ENGINES:
         raise ValueError(f"STT_ENGINE={engine!r}: use auto, {' or '.join(STT_ENGINES)}")
     return engine
@@ -72,9 +72,9 @@ def stt_engine():
 def build_stt_engine():
     """Build the chosen STT engine once: it loads its STT model and then serves transcribe(chunk)."""
     engine = stt_engine()
-    if engine != "faster-whisper":
-        print(f"STT: {engine} is not available yet, using faster-whisper")
-    return FasterWhisperEngine()
+    if engine not in ENGINES:
+        print(f"STT: {engine} is not available yet, using {FasterWhisperEngine.name}")
+    return ENGINES.get(engine, FasterWhisperEngine)()
 
 
 class FasterWhisperEngine:
@@ -140,6 +140,9 @@ class FasterWhisperEngine:
             return None
         self._last_text[chunk.source] = (self._last_text.get(chunk.source, "") + " " + text)[-1000:]
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)
+
+
+ENGINES = {FasterWhisperEngine.name: FasterWhisperEngine}
 
 
 class SttWorker(threading.Thread):

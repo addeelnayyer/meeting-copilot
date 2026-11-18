@@ -40,7 +40,7 @@ def main(path, source="Participant"):
     t = time.perf_counter()
     stt = build_stt_engine()
     print(f"model load {time.perf_counter() - t:.1f}s")
-    stt.transcribe(chunks[0])  # warm-up (CUDA kernels)
+    stt.warm_up()
 
     lat = []
     for c in chunks:

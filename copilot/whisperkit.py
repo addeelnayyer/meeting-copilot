@@ -1,6 +1,7 @@
 """WhisperKit STT engine: Homebrew's whisperkit-cli serve as a child process on localhost."""
 
 import atexit
+import functools
 import io
 import re
 import shutil
@@ -14,7 +15,7 @@ import httpx
 import numpy as np
 
 from . import config
-from .segment import Segment, StickyLanguage, is_hallucination
+from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
 
 HOST = "127.0.0.1"
 
@@ -128,6 +129,7 @@ class Server:
             raise RuntimeError(f"whisperkit-cli exited with code {self.proc.returncode}, see {self.log}")
 
     def close(self):
+        atexit.unregister(self.close)
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -138,31 +140,35 @@ class Server:
 
 
 class WhisperKitEngine:
-    """STT engine on a whisperkit-cli server; url points at a running one instead of launching it."""
+    """STT engine on a whisperkit-cli server. launch() starts one (tests pass a fake) and returns
+    an object with url, check() and close()."""
 
     name = "whisperkit"
 
-    def __init__(self, url=None):
-        self.server = None
-        if url is None:
+    def __init__(self, launch=None):
+        if launch is None:
             model = model_path()
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
-            self.server = Server(model)
-            url = self.server.url
-        self.http = httpx.Client(base_url=url, timeout=30)
+            launch = functools.partial(Server, model)
+        self._launch = launch
+        self._restarted = False
+        self._start()
+        self._language = StickyLanguage()
+
+    def _start(self):
+        self.server = self._launch()
+        self.http = httpx.Client(base_url=self.server.url, timeout=30)
         try:
             self._wait_healthy()
         except BaseException:
             self.close()
             raise
-        self._language = StickyLanguage()
 
     def _wait_healthy(self):
         """The first start specializes the Core ML model for this chip, which can take minutes."""
         deadline = time.monotonic() + config.WHISPERKIT_START_TIMEOUT_S
         while True:
-            if self.server:
-                self.server.check()
+            self.server.check()
             try:
                 if self.http.get("/health", timeout=2).status_code == 200:
                     return
@@ -174,14 +180,40 @@ class WhisperKitEngine:
 
     def close(self):
         self.http.close()
-        if self.server:
-            self.server.close()
+        self.server.close()
 
     def warm_up(self):
         """About 1 s of silence, so the first meeting chunk does not pay for the first decode."""
         self._post(wav_bytes(np.zeros(config.SAMPLE_RATE, dtype=np.float32)), config.LANGUAGES[0])
 
     def _post(self, wav, lang):
+        while True:  # after a restart: the chunk in flight again, on the new server
+            try:
+                return self._request(wav, lang)
+            # A timeout counts too: a server that takes 30 s for one chunk is as good as gone.
+            except (httpx.TransportError, httpx.HTTPStatusError) as e:
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                    raise
+                self._restart(e)
+
+    def _restart(self, error):
+        """A crashed, unreachable or failing server is restarted once per run; the next failure is final."""
+        try:
+            self.server.check()
+            reason = str(error) or type(error).__name__
+        except RuntimeError as e:  # the process is gone
+            reason = str(e)
+        if self._restarted:
+            raise EngineFailed(f"whisperkit-cli failed again: {reason}") from error
+        self._restarted = True
+        print(f"STT: whisperkit-cli failed ({reason}), restarting it")
+        self.close()
+        try:
+            self._start()
+        except Exception as e:
+            raise EngineFailed(f"whisperkit-cli restart failed: {e}") from e
+
+    def _request(self, wav, lang):
         # No prompt: WhisperKit pre-fills it through the decoder, which doubled latency and,
         # with temperature fallback off, set off repetition loops (step 0 in #1).
         data = {"model": config.WHISPERKIT_MODEL, "temperature": "0", "response_format": "verbose_json"}

@@ -3,7 +3,6 @@
 import json
 import queue
 import threading
-import time
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -239,10 +238,6 @@ class Launcher:
         self.servers.append(FakeServer())
         return self.servers[-1]
 
-    def close(self):
-        for s in self.servers:
-            s.close()
-
 
 class FakeFasterWhisper:
     name = "faster-whisper"
@@ -275,12 +270,15 @@ def worker(monkeypatch):
 
     monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda: whisperkit.WhisperKitEngine(launch=launcher),
                                          "faster-whisper": fallback})
-    chunks, segments, statuses, stop = queue.Queue(), queue.Queue(), [], threading.Event()
-    w = stt.SttWorker(chunks, segments.put, stop, on_status=statuses.append)
+    chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()
+
+    def on_status(status):
+        statuses.append(status)
+        ready.set()
+
+    w = stt.SttWorker(chunks, segments.put, stop, on_status=on_status)
     w.start()
-    deadline = time.monotonic() + 10
-    while not statuses and time.monotonic() < deadline:  # warmed up on the first server
-        time.sleep(0.01)
+    assert ready.wait(10), "the worker never became ready"
 
     def transcribe(c=None):
         chunks.put(c or chunk())
@@ -292,7 +290,6 @@ def worker(monkeypatch):
     assert not w.is_alive()
     assert all(s.closed for s in launcher.servers), "a whisperkit-cli server outlived the worker"
     assert all(f.closed for f in fallbacks)
-    launcher.close()
 
 
 def test_one_crash_is_recovered_by_one_restart(worker):

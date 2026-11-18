@@ -1,6 +1,7 @@
 """WhisperKit STT engine: Homebrew's whisperkit-cli serve as a child process on localhost."""
 
 import atexit
+import functools
 import io
 import re
 import shutil
@@ -102,10 +103,9 @@ class WhisperKitEngine:
                 raise RuntimeError(f"WhisperKit model {config.WHISPERKIT_MODEL} is neither in "
                                    f"WHISPERKIT_MODEL_PATH nor in {MACWHISPER_MODELS}")
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
-            launch = lambda: Server(model)  # noqa: E731
+            launch = functools.partial(Server, model)
         self._launch = launch
         self._restarted = False
-        self.server = self.http = None
         self._start()
         self._language = StickyLanguage()
 
@@ -133,10 +133,8 @@ class WhisperKitEngine:
             time.sleep(0.2)
 
     def close(self):
-        if self.http:
-            self.http.close()
-        if self.server:
-            self.server.close()
+        self.http.close()
+        self.server.close()
 
     def warm_up(self):
         """About 1 s of silence, so the first meeting chunk does not pay for the first decode."""
@@ -146,10 +144,9 @@ class WhisperKitEngine:
         while True:  # after a restart: the chunk in flight again, on the new server
             try:
                 return self._request(wav, lang)
-            except httpx.TransportError as e:
-                self._restart(e)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code < 500:
+            # A timeout counts too: a server that takes 30 s for one chunk is as good as gone.
+            except (httpx.TransportError, httpx.HTTPStatusError) as e:
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
                     raise
                 self._restart(e)
 

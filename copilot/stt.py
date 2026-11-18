@@ -117,11 +117,7 @@ class SttWorker(threading.Thread):
     def run(self):
         self.engine = build_stt_engine()
         try:
-            try:
-                self.engine.warm_up()
-                self.on_status({"ready": True, "engine": self.engine.name})
-            except EngineFailed as e:
-                self._switch(e)
+            self._warm_up()
             while not self.stop_event.is_set():
                 try:
                     chunk = self.in_queue.get(timeout=0.2)
@@ -133,6 +129,13 @@ class SttWorker(threading.Thread):
                     self.on_segment(seg)
         finally:
             self.engine.close()
+
+    def _warm_up(self):
+        try:
+            self.engine.warm_up()
+            self.on_status({"ready": True, "engine": self.engine.name})
+        except EngineFailed as e:
+            self._switch(e)
 
     def _transcribe(self, chunk):
         try:
@@ -146,12 +149,12 @@ class SttWorker(threading.Thread):
         failed, fallback = self.engine.name, FasterWhisperEngine.name
         print(f"STT: {failed} failed ({error}), switching to {fallback} for the rest of the run")
         self.engine.close()
-        note = f"{failed} ausgefallen ({error}), STT jetzt mit {fallback}"
-        self.on_status({"ready": False, "engine": fallback, "note": note})
+        status = {"ready": False, "engine": fallback, "note": f"{failed} ausgefallen ({error}), STT jetzt mit {fallback}"}
+        self.on_status(status)
         try:
             self.engine = build_stt_engine(fallback)
             self.engine.warm_up()
         except Exception as e:
-            self.on_status({"ready": False, "engine": fallback, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
+            self.on_status({**status, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
             raise
-        self.on_status({"ready": True, "engine": fallback, "note": note})
+        self.on_status({**status, "ready": True})

@@ -42,6 +42,14 @@ LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if c
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200
+# WhisperKit (macOS, Homebrew whisperkit-cli): an argmaxinc/whisperkit-coreml model ID
+# (large-v3-turbo by default), found in WHISPERKIT_MODEL_PATH or MacWhisper's models folder.
+WHISPERKIT_MODEL = _env("WHISPERKIT_MODEL", "openai_whisper-large-v3-v20240930")
+WHISPERKIT_MODEL_PATH = _env("WHISPERKIT_MODEL_PATH", "")
+# For encoder and decoder: cpuAndGPU | cpuAndNeuralEngine | all | cpuOnly (GPU: ~0.3 s/chunk on an M4 Max)
+WHISPERKIT_COMPUTE_UNITS = _env("WHISPERKIT_COMPUTE_UNITS", "cpuAndGPU")
+WHISPERKIT_START_TIMEOUT_S = 300  # the first Core ML load specializes the model for this chip
+WHISPERKIT_MAX_COMPRESSION = 2.4  # segments above this gzip ratio are repetition loops
 
 # --- Transcript ---
 TURN_GAP_S = 1.2

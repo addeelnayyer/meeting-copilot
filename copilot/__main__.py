@@ -5,6 +5,7 @@ import asyncio
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -124,12 +125,13 @@ async def main(args):
     window = Window()
     hub.publish(window.state())
 
-    SttWorker(
+    stt = SttWorker(
         chunks,
         on_segment=lambda seg: loop.call_soon_threadsafe(assistant.on_segment, seg),
         stop_event=stop,
         on_ready=lambda: loop.call_soon_threadsafe(hub.publish, {"type": "stt", "ready": True}),
-    ).start()
+    )
+    stt.start()
     if args.start:
         assistant.start_meeting()
 
@@ -178,6 +180,7 @@ async def main(args):
         stop.set()
         if assistant.capture:
             assistant.capture.stop()
+        stt.join(timeout=10)  # lets the STT engine close (WhisperKit server); atexit is the backstop
 
 
 def cli():
@@ -192,6 +195,9 @@ def cli():
     if args.log:  # desktop launchers have no terminal (pythonw on Windows has no stdout at all)
         Path(args.log).parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(args.log, "a", encoding="utf-8", buffering=1)
+    # uvicorn re-raises the signal it shut down on; SIGTERM's default action would kill the process
+    # without the cleanup (meeting record, WhisperKit server) that Ctrl+C gets.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         asyncio.run(main(args))
     except KeyboardInterrupt:

@@ -3,44 +3,11 @@
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
 
 from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 loads)
 from . import config
-
-# Subtitle credits from Whisper's training data, with varying suffixes; never real speech.
-CREDITS = ("untertitel im auftrag des zdf", "untertitel der amara.org-community")
-
-# Classic Whisper hallucinations on silence/noise, dropped when the model is unsure.
-FILLER = {
-    "vielen dank.",
-    "vielen dank fürs zuschauen.",
-    "thank you.",
-    "thanks for watching!",
-    "bis zum nächsten mal.",
-    "...",
-}
-
-
-@dataclass
-class Segment:
-    source: str
-    text: str
-    lang: str
-    duration: float
-    t_end: float
-    latency: float = 0.0
-    ts: float = field(default_factory=time.time)
-    id: int = 0
-
-
-def is_hallucination(text, no_speech_prob, avg_logprob):
-    norm = text.strip().lower()
-    if not norm or all(not c.isalnum() for c in norm) or norm.startswith(CREDITS):
-        return True
-    if no_speech_prob > 0.6 and avg_logprob < -1.0:
-        return True
-    return norm in FILLER and no_speech_prob > 0.2
+from .segment import Segment, StickyLanguage, is_hallucination
+from .whisperkit import WhisperKitEngine
 
 
 def whisper_settings(cuda_devices):
@@ -56,9 +23,6 @@ def whisper_settings(cuda_devices):
     return model, device, compute
 
 
-STT_ENGINES = ("faster-whisper", "whisperkit")
-
-
 def stt_engine():
     """The STT engine named by STT_ENGINE; "auto" is faster-whisper on every platform for now."""
     engine = config.STT_ENGINE
@@ -69,12 +33,10 @@ def stt_engine():
     return engine
 
 
-def build_stt_engine():
-    """Build the chosen STT engine once: it loads its STT model and then serves transcribe(chunk)."""
-    engine = stt_engine()
-    if engine not in ENGINES:
-        print(f"STT: {engine} is not available yet, using {FasterWhisperEngine.name}")
-    return ENGINES.get(engine, FasterWhisperEngine)()
+def build_stt_engine(engine=None):
+    """Build the chosen STT engine (or `engine`) once: it loads its STT model and then serves
+    warm_up(), transcribe(chunk) and close()."""
+    return ENGINES[engine or stt_engine()]()
 
 
 class FasterWhisperEngine:
@@ -95,8 +57,7 @@ class FasterWhisperEngine:
         except Exception:
             self.model = WhisperModel(*args, **kwargs)  # first run: download
         self._last_text = {}
-        self._lang = {}  # sticky language per source
-        self._count = {}
+        self._language = StickyLanguage()
 
     def warm_up(self):
         """The first call is slow (CUDA compiles kernels, ~5 s); do it before the meeting audio arrives."""
@@ -104,24 +65,19 @@ class FasterWhisperEngine:
 
         list(self.model.transcribe(np.zeros(config.SAMPLE_RATE, dtype=np.float32), language="de")[0])
 
-    def _language(self, chunk):
-        """Language detection costs a full extra encoder pass (~240 ms on a 4060), so it
-        runs only on every Nth chunk that is long enough to detect reliably."""
+    def _pick_language(self, chunk):
         if config.WHISPER_LANGUAGE != "auto":
             return config.WHISPER_LANGUAGE
-        n = self._count[chunk.source] = self._count.get(chunk.source, 0) + 1
-        lang = self._lang.get(chunk.source)
-        if lang is None or (n % config.LANG_DETECT_EVERY == 0 and chunk.duration >= config.CHUNK_MIN_S):
+        if self._language.due(chunk):
             _, _, probs = self.model.detect_language(chunk.audio)
             probs = dict(probs)
             # Restricting the choice to the expected languages avoids rare misdetections.
-            lang = max(config.LANGUAGES, key=lambda l: probs.get(l, 0.0))
-            self._lang[chunk.source] = lang
-        return lang
+            self._language.lang[chunk.source] = max(config.LANGUAGES, key=lambda l: probs.get(l, 0.0))
+        return self._language.lang[chunk.source]
 
     def transcribe(self, chunk):
         prompt = self._last_text.get(chunk.source, "")[-config.PROMPT_CONTEXT_CHARS:]
-        lang = self._language(chunk)
+        lang = self._pick_language(chunk)
         segs, _ = self.model.transcribe(
             chunk.audio,
             language=lang,
@@ -141,8 +97,12 @@ class FasterWhisperEngine:
         self._last_text[chunk.source] = (self._last_text.get(chunk.source, "") + " " + text)[-1000:]
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)
 
+    def close(self):
+        pass
 
-ENGINES = {FasterWhisperEngine.name: FasterWhisperEngine}
+
+ENGINES = {e.name: e for e in (FasterWhisperEngine, WhisperKitEngine)}
+STT_ENGINES = tuple(ENGINES)
 
 
 class SttWorker(threading.Thread):
@@ -155,15 +115,18 @@ class SttWorker(threading.Thread):
 
     def run(self):
         engine = build_stt_engine()
-        engine.warm_up()
-        if self.on_ready:
-            self.on_ready()
-        while not self.stop_event.is_set():
-            try:
-                chunk = self.in_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            seg = engine.transcribe(chunk)
-            if seg:
-                seg.latency = time.monotonic() - chunk.t_end
-                self.on_segment(seg)
+        try:
+            engine.warm_up()
+            if self.on_ready:
+                self.on_ready()
+            while not self.stop_event.is_set():
+                try:
+                    chunk = self.in_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                seg = engine.transcribe(chunk)
+                if seg:
+                    seg.latency = time.monotonic() - chunk.t_end
+                    self.on_segment(seg)
+        finally:
+            engine.close()

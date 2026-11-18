@@ -125,12 +125,13 @@ async def main(args):
     window = Window()
     hub.publish(window.state())
 
-    SttWorker(
+    stt = SttWorker(
         chunks,
         on_segment=lambda seg: loop.call_soon_threadsafe(assistant.on_segment, seg),
         stop_event=stop,
         on_ready=lambda: loop.call_soon_threadsafe(hub.publish, {"type": "stt", "ready": True}),
-    ).start()
+    )
+    stt.start()
     if args.start:
         assistant.start_meeting()
 
@@ -179,6 +180,7 @@ async def main(args):
         stop.set()
         if assistant.capture:
             assistant.capture.stop()
+        stt.join(timeout=10)  # lets the STT engine close (WhisperKit server); atexit is the backstop
 
 
 def cli():

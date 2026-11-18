@@ -14,7 +14,7 @@ import httpx
 import numpy as np
 
 from . import config
-from .stt import Segment, is_hallucination
+from .segment import Segment, StickyLanguage, is_hallucination
 
 HOST = "127.0.0.1"
 
@@ -109,8 +109,7 @@ class WhisperKitEngine:
         except BaseException:
             self.close()
             raise
-        self._lang = {}  # sticky language per source
-        self._count = {}
+        self._language = StickyLanguage()
 
     def _wait_healthy(self):
         """The first start specializes the Core ML model for this chip, which can take minutes."""
@@ -125,7 +124,7 @@ class WhisperKitEngine:
                 pass
             if time.monotonic() > deadline:
                 raise RuntimeError(f"whisperkit-cli not healthy after {config.WHISPERKIT_START_TIMEOUT_S} s")
-            time.sleep(0.5)
+            time.sleep(0.2)
 
     def close(self):
         self.http.close()
@@ -134,16 +133,16 @@ class WhisperKitEngine:
 
     def warm_up(self):
         """About 1 s of silence, so the first meeting chunk does not pay for the first decode."""
-        self._post(np.zeros(config.SAMPLE_RATE, dtype=np.float32), config.LANGUAGES[0])
+        self._post(wav_bytes(np.zeros(config.SAMPLE_RATE, dtype=np.float32)), config.LANGUAGES[0])
 
-    def _post(self, audio, lang):
+    def _post(self, wav, lang):
         # No prompt: WhisperKit pre-fills it through the decoder, which doubled latency and,
         # with temperature fallback off, set off repetition loops (step 0 in #1).
         data = {"model": config.WHISPERKIT_MODEL, "temperature": "0", "response_format": "verbose_json"}
         if lang:
             data["language"] = lang
         r = self.http.post("/v1/audio/transcriptions", data=data,
-                           files={"file": ("chunk.wav", wav_bytes(audio), "audio/wav")})
+                           files={"file": ("chunk.wav", wav, "audio/wav")})
         r.raise_for_status()
         return r.json()
 
@@ -157,33 +156,28 @@ class WhisperKitEngine:
                 continue
             if not is_hallucination(text, s.get("no_speech_prob", 0.0), s.get("avg_logprob", 0.0)):
                 kept.append(text)
-        return " ".join(kept).strip()
-
-    def _detect_due(self, chunk):
-        """The server gives no language probabilities, so detection can't be limited to
-        LANGUAGES; it runs on the first and every Nth chunk long enough to detect reliably."""
-        n = self._count[chunk.source] = self._count.get(chunk.source, 0) + 1
-        return chunk.source not in self._lang or (
-            n % config.LANG_DETECT_EVERY == 0 and chunk.duration >= config.CHUNK_MIN_S)
+        return " ".join(kept)
 
     def transcribe(self, chunk):
+        wav = wav_bytes(chunk.audio)
         if config.WHISPER_LANGUAGE != "auto":
             lang = config.WHISPER_LANGUAGE
-            reply = self._post(chunk.audio, lang)
-        elif self._detect_due(chunk):
-            reply = self._post(chunk.audio, None)
+        elif self._language.due(chunk):
+            # The server gives no language probabilities, so detection can't be limited to LANGUAGES.
+            lang = None
+        else:
+            lang = self._language.lang[chunk.source]
+        reply = self._post(wav, lang)
+        text = self._text(reply)
+        if lang is None:
             lang = reply.get("language", "")
             if lang in config.LANGUAGES:
-                self._lang[chunk.source] = lang
-            elif self._text(reply):
+                self._language.lang[chunk.source] = lang
+            elif text:
                 # A language outside LANGUAGES is a misdetection: keep the sticky one (your
                 # own on a first chunk) and decode the chunk again in it.
-                lang = self._lang.setdefault(chunk.source, config.LANGUAGES[0])
-                reply = self._post(chunk.audio, lang)
-        else:
-            lang = self._lang[chunk.source]
-            reply = self._post(chunk.audio, lang)
-        text = self._text(reply)
+                lang = self._language.lang.setdefault(chunk.source, config.LANGUAGES[0])
+                text = self._text(self._post(wav, lang))
         if not text:
             return None
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)

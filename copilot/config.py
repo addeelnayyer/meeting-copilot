@@ -28,7 +28,7 @@ PRE_ROLL_S = 0.2
 MIN_UTTERANCE_S = 0.25  # anything shorter is a click/cough, dropped
 
 # --- STT ---
-STT_ENGINE = _env("STT_ENGINE", "auto")  # auto (faster-whisper for now) | faster-whisper | whisperkit
+STT_ENGINE = _env("STT_ENGINE", "auto")  # auto (WhisperKit on macOS arm64, else faster-whisper) | faster-whisper | whisperkit
 # "auto": CUDA (large-v3-turbo, float16) when an NVIDIA GPU is usable, else CPU (small, int8)
 WHISPER_DEVICE = _env("WHISPER_DEVICE", "auto")  # auto | cuda | cpu
 WHISPER_MODEL = _env("WHISPER_MODEL", "auto")

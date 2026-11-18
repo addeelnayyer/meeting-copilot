@@ -1,7 +1,4 @@
 import asyncio
-import importlib
-import re
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -626,16 +623,3 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
-
-
-def test_installers_call_only_existing_copilot_names():
-    """install.sh/install.ps1 prepare the STT model with `python -c "from copilot.x import y"`;
-    their `||` fallback would hide a renamed function."""
-    root = Path(__file__).resolve().parent.parent
-    imports = []
-    for installer in ("install.sh", "install.ps1"):
-        imports += re.findall(r"from (copilot[\w.]*) import ([\w, ]+)", (root / installer).read_text())
-    assert imports
-    for module, names in imports:
-        for name in names.split(","):
-            assert hasattr(importlib.import_module(module), name.strip()), f"{module}.{name.strip()}"

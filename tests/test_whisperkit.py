@@ -2,6 +2,7 @@
 
 import json
 import queue
+import sys
 import threading
 from email.parser import BytesParser
 from email.policy import default
@@ -393,3 +394,16 @@ def test_server_errors_count_as_failures(worker):
     worker.launcher.servers[-1].status = 500
     assert worker.transcribe() == "from faster-whisper"
     assert "500" in worker.statuses[-1]["note"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Homebrew paths are POSIX")
+def test_binary_is_found_in_homebrew_without_it_on_the_path(tmp_path, monkeypatch):
+    """Apps started from Finder get no Homebrew PATH."""
+    cli = tmp_path / "whisperkit-cli"
+    cli.write_text("#!/bin/sh\n")
+    cli.chmod(0o755)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(whisperkit, "HOMEBREW_BINS", (str(tmp_path),))
+    assert whisperkit.binary() == str(cli)
+    monkeypatch.setattr(whisperkit, "HOMEBREW_BINS", ())
+    assert whisperkit.binary() is None

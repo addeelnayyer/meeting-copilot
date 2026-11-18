@@ -2,7 +2,6 @@
 
 import platform
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -53,7 +52,7 @@ def _fallback_reason(setting, why):
 
 def chosen_stt_engine(setting):
     """stt_engine() for this machine."""
-    return stt_engine(setting, sys.platform, platform.machine(), shutil.which("whisperkit-cli"))
+    return stt_engine(setting, sys.platform, platform.machine(), whisperkit.binary())
 
 
 def build_stt_engine(setting=None):
@@ -193,3 +192,8 @@ class SttWorker(threading.Thread):
             self.on_status({**status, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
             raise
         self.on_status({**status, "ready": True})
+
+
+if __name__ == "__main__":
+    # The installers prepare the STT model: download it and, for WhisperKit, the first Core ML load.
+    build_stt_engine().close()

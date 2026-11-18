@@ -76,7 +76,7 @@ New-Item -ItemType Directory -Force "knowledge_base" | Out-Null
 Step "Downloading the embedding model for your notes"
 & $Uv run python -m copilot.rag download
 Step "Downloading the STT model (about 1.6 GB with an NVIDIA GPU, less without)"
-& $Uv run python -c "from copilot.stt import build_stt_engine; build_stt_engine().close()"
+& $Uv run python -m copilot.stt
 if ($LASTEXITCODE) { Write-Host "Could not load the STT model now; it is downloaded on the first start instead." }
 
 # --- 4. Shortcuts (pythonw: no console window) ---

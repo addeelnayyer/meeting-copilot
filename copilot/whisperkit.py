@@ -26,7 +26,15 @@ MACWHISPER_MODELS = (Path.home() / "Library/Application Support/MacWhisper/model
                      / "argmaxinc/whisperkit-coreml")
 
 
-NO_BINARY = "whisperkit-cli is not on the PATH (brew install whisperkit-cli)"
+NO_BINARY = "whisperkit-cli is not installed (brew install whisperkit-cli)"
+
+# Apps started from Finder or the Dock get no Homebrew PATH.
+HOMEBREW_BINS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def binary():
+    """Path of whisperkit-cli on the PATH or in Homebrew's bin folders; None when missing."""
+    return shutil.which("whisperkit-cli") or shutil.which("whisperkit-cli", path=":".join(HOMEBREW_BINS))
 
 HF_REPO = "argmaxinc/whisperkit-coreml"
 
@@ -112,15 +120,15 @@ class Server:
     """The whisperkit-cli serve child process; stopped at exit at the latest."""
 
     def __init__(self, model):
-        binary = shutil.which("whisperkit-cli")
-        if not binary:
+        cli = binary()
+        if not cli:
             raise RuntimeError(NO_BINARY)
         port = free_port()
         self.url = f"http://{HOST}:{port}"
         config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         self.log = config.SESSIONS_DIR / "whisperkit.log"
         with open(self.log, "w", encoding="utf-8") as log:
-            self.proc = subprocess.Popen(server_command(binary, model, port), stdin=subprocess.DEVNULL,
+            self.proc = subprocess.Popen(server_command(cli, model, port), stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT)
         atexit.register(self.close)
 

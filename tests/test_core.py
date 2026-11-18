@@ -623,3 +623,19 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
+
+
+def test_installers_call_only_existing_copilot_names():
+    """install.sh/install.ps1 prepare the STT model with `python -c "from copilot.x import y"`;
+    their `||` fallback would hide a renamed function."""
+    import importlib
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    imports = [m for f in ("install.sh", "install.ps1")
+               for m in re.findall(r"from (copilot[\w.]*) import ([\w, ]+)", (root / f).read_text())]
+    assert imports
+    for module, names in imports:
+        for name in names.split(","):
+            assert hasattr(importlib.import_module(module), name.strip()), f"{module}.{name.strip()}"

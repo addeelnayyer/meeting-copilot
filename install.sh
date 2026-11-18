@@ -72,9 +72,22 @@ step "Installing Python and dependencies"
 mkdir -p knowledge_base
 step "Downloading the embedding model for your notes"
 "$UV" run python -m copilot.rag download
-step "Downloading the Whisper model (about 1.6 GB with an NVIDIA GPU, less without)"
-"$UV" run python -c "from copilot.stt import Transcriber; Transcriber()" \
-  || echo "Could not load Whisper now; it is downloaded on the first start instead."
+if [ "$OS" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+  # WhisperKit STT engine (Neural Engine/GPU); without it the app uses faster-whisper on the CPU.
+  BREW=$(command -v brew || true)
+  [ -n "$BREW" ] || [ ! -x /opt/homebrew/bin/brew ] || BREW=/opt/homebrew/bin/brew
+  if [ -n "$BREW" ]; then
+    step "Installing whisperkit-cli (WhisperKit STT engine)"
+    "$BREW" list whisperkit-cli >/dev/null 2>&1 || "$BREW" install whisperkit-cli \
+      || echo "Could not install whisperkit-cli; transcription uses faster-whisper on the CPU instead."
+    PATH=$(dirname "$BREW"):$PATH  # so the model step below finds whisperkit-cli
+  else
+    echo "Tip: for faster, more accurate transcription install Homebrew (https://brew.sh) and run: brew install whisperkit-cli"
+  fi
+fi
+step "Preparing the STT model (about 1.6 GB with an NVIDIA GPU or WhisperKit, less on the CPU)"
+"$UV" run python -c "from copilot.stt import build_stt_engine; build_stt_engine().close()" \
+  || echo "Could not load the STT model now; it is downloaded on the first start instead."
 
 # --- 4. Launcher ---
 PY=$DIR/.venv/bin/python
@@ -85,6 +98,8 @@ if [ "$OS" = Darwin ]; then
   mkdir -p "$MAC_APP/Contents/MacOS" "$MAC_APP/Contents/Resources"
   cat > "$MAC_APP/Contents/MacOS/meeting-copilot" <<EOF
 #!/bin/sh
+# Apps started from Finder get no Homebrew PATH; the WhisperKit STT engine needs whisperkit-cli.
+PATH=/opt/homebrew/bin:/usr/local/bin:\$PATH
 cd "$DIR" && exec "$PY" $ARGS
 EOF
   chmod +x "$MAC_APP/Contents/MacOS/meeting-copilot"

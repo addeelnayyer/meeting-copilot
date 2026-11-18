@@ -1,15 +1,18 @@
 """WhisperKit STT engine against a fake whisperkit-cli server: no Mac or WhisperKit needed."""
 
 import json
+import queue
 import threading
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from copilot import config, whisperkit
+from copilot import config, stt, whisperkit
+from copilot.segment import Segment
 from copilot.vad import Chunk
 
 MODEL = "openai_whisper-large-v3-v20240930"
@@ -45,7 +48,7 @@ class FakeServer:
                 assert fields.pop("file").startswith(b"RIFF")
                 fields = {k: v.decode() for k, v in fields.items()}
                 fake.requests.append(fields)
-                self._send(200, fake.reply(fields))
+                self._send(fake.status, fake.reply(fields) if fake.status == 200 else {"error": "boom"})
 
             def _send(self, status, data):
                 out = json.dumps(data).encode()
@@ -57,7 +60,25 @@ class FakeServer:
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+        self.closed = self.dead = False
+        self.status = 200  # of transcription replies
         threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
+
+    # The engine's view of a launched whisperkit-cli server.
+    def check(self):
+        if self.dead:
+            raise RuntimeError("whisperkit-cli exited with code -9")
+
+    def kill(self):
+        """A crash: connections are refused from now on."""
+        self.dead = True
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.kill()
 
 
 @pytest.fixture
@@ -68,12 +89,11 @@ def server(monkeypatch):
     yield fake
     for engine in fake.engines:
         engine.close()
-    fake.httpd.shutdown()
-    fake.httpd.server_close()
+    fake.close()
 
 
 def engine_for(server):
-    engine = whisperkit.WhisperKitEngine(url=server.url)
+    engine = whisperkit.WhisperKitEngine(launch=lambda: server)
     server.engines.append(engine)
     engine.warm_up()
     server.requests.clear()
@@ -202,3 +222,119 @@ def test_fixed_language_is_always_sent(server, monkeypatch):
     for _ in range(config.LANG_DETECT_EVERY + 1):
         assert engine.transcribe(chunk()).lang == "fr"
     assert sent_languages(server) == ["fr"] * (config.LANG_DETECT_EVERY + 1)
+
+
+# --- Recovering from a crash during a meeting ------------------------------------
+class Launcher:
+    """Starts a fresh fake server on every launch, as a restart of whisperkit-cli would."""
+
+    def __init__(self):
+        self.servers = []
+        self.fail = False
+
+    def __call__(self):
+        if self.fail:
+            raise RuntimeError("whisperkit-cli is not on the PATH")
+        self.servers.append(FakeServer())
+        return self.servers[-1]
+
+
+class FakeFasterWhisper:
+    name = "faster-whisper"
+
+    def __init__(self):
+        self.closed = False
+
+    def warm_up(self):
+        pass
+
+    def transcribe(self, chunk):
+        return Segment(chunk.source, "from faster-whisper", "de", chunk.duration, chunk.t_end)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def worker(monkeypatch):
+    """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to.
+    transcribe(chunk) feeds it one chunk and waits for the segment."""
+    monkeypatch.setattr(config, "WHISPER_LANGUAGE", "en")
+    monkeypatch.setattr(config, "STT_ENGINE", "whisperkit")
+    launcher = Launcher()
+    fallbacks = []
+
+    def fallback():
+        fallbacks.append(FakeFasterWhisper())
+        return fallbacks[-1]
+
+    monkeypatch.setattr(stt, "chosen_stt_engine", lambda setting: (setting, None))  # no Mac needed
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda: whisperkit.WhisperKitEngine(launch=launcher),
+                                         "faster-whisper": fallback})
+    chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()
+
+    def on_status(status):
+        statuses.append(status)
+        ready.set()
+
+    w = stt.SttWorker(chunks, segments.put, stop, on_status=on_status)
+    w.start()
+    assert ready.wait(10), "the worker never became ready"
+
+    def transcribe(c=None):
+        chunks.put(c or chunk())
+        return segments.get(timeout=10).text
+
+    yield SimpleNamespace(transcribe=transcribe, launcher=launcher, fallbacks=fallbacks, statuses=statuses)
+    stop.set()
+    w.join(timeout=10)
+    assert not w.is_alive()
+    assert all(s.closed for s in launcher.servers), "a whisperkit-cli server outlived the worker"
+    assert all(f.closed for f in fallbacks)
+
+
+def test_one_crash_is_recovered_by_one_restart(worker):
+    assert worker.transcribe() == "Hello there."
+    worker.launcher.servers[-1].kill()
+    # The chunk in flight is retried on the restarted server, and later chunks stay on WhisperKit.
+    assert worker.transcribe() == "Hello there."
+    assert worker.transcribe() == "Hello there."
+    assert len(worker.launcher.servers) == 2
+    assert worker.launcher.servers[0].closed
+    assert worker.fallbacks == []
+
+
+def test_second_failure_switches_to_faster_whisper_with_a_note(worker):
+    assert worker.transcribe() == "Hello there."
+    worker.launcher.servers[-1].kill()
+    assert worker.transcribe() == "Hello there."  # restarted
+    worker.launcher.servers[-1].kill()
+    # The chunk in flight is not lost: faster-whisper transcribes it.
+    assert worker.transcribe() == "from faster-whisper"
+    assert worker.transcribe() == "from faster-whisper"
+    assert len(worker.launcher.servers) == 2  # no second restart
+    assert all(s.closed for s in worker.launcher.servers)
+    assert len(worker.fallbacks) == 1
+    first, switching, switched = worker.statuses
+    assert first == {"ready": True, "engine": "whisperkit"}
+    assert not switching["ready"] and switched["ready"]  # "STT loading" while faster-whisper loads
+    assert switching["note"] == switched["note"]
+    assert switched["engine"] == "faster-whisper"
+    assert "whisperkit" in switched["note"] and "faster-whisper" in switched["note"]
+    assert "exited with code -9" in switched["note"]  # why
+
+
+def test_failed_restart_switches_to_faster_whisper(worker):
+    assert worker.transcribe() == "Hello there."
+    worker.launcher.fail = True
+    worker.launcher.servers[-1].kill()
+    assert worker.transcribe() == "from faster-whisper"
+    assert "not on the PATH" in worker.statuses[-1]["note"]
+
+
+def test_server_errors_count_as_failures(worker):
+    worker.launcher.servers[-1].status = 500
+    assert worker.transcribe() == "Hello there."  # restarted
+    worker.launcher.servers[-1].status = 500
+    assert worker.transcribe() == "from faster-whisper"
+    assert "500" in worker.statuses[-1]["note"]

@@ -9,7 +9,7 @@ import time
 
 from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 loads)
 from . import config
-from .segment import Segment, StickyLanguage, is_hallucination
+from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
 from . import whisperkit
 
 
@@ -151,26 +151,47 @@ STT_ENGINES = tuple(ENGINES)
 
 
 class SttWorker(threading.Thread):
-    def __init__(self, in_queue, on_segment, stop_event, on_ready=None):
+    def __init__(self, in_queue, on_segment, stop_event, on_status=None):
         super().__init__(daemon=True, name="stt")
         self.in_queue = in_queue
         self.on_segment = on_segment
         self.stop_event = stop_event
-        self.on_ready = on_ready
+        self.on_status = on_status or (lambda status: None)
+        self.engine = None
 
     def run(self):
-        engine = build_stt_engine()
+        self.engine = build_stt_engine()
         try:
-            if self.on_ready:
-                self.on_ready()
+            self.on_status({"ready": True, "engine": self.engine.name})  # built warm
             while not self.stop_event.is_set():
                 try:
                     chunk = self.in_queue.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                seg = engine.transcribe(chunk)
+                seg = self._transcribe(chunk)
                 if seg:
                     seg.latency = time.monotonic() - chunk.t_end
                     self.on_segment(seg)
         finally:
-            engine.close()
+            self.engine.close()
+
+    def _transcribe(self, chunk):
+        try:
+            return self.engine.transcribe(chunk)
+        except EngineFailed as e:
+            self._switch(e)
+            return self.engine.transcribe(chunk)  # the chunk in flight is not lost
+
+    def _switch(self, error):
+        """faster-whisper for the rest of the run, and a note in the UI saying why."""
+        failed, fallback = self.engine.name, FasterWhisperEngine.name
+        print(f"STT: {failed} failed ({error}), switching to {fallback} for the rest of the run")
+        self.engine.close()
+        status = {"ready": False, "engine": fallback, "note": f"{failed} ausgefallen ({error}), STT jetzt mit {fallback}"}
+        self.on_status(status)
+        try:
+            self.engine = build_stt_engine(fallback)  # built warm
+        except Exception as e:
+            self.on_status({**status, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
+            raise
+        self.on_status({**status, "ready": True})

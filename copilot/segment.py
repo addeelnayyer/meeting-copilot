@@ -31,6 +31,10 @@ class Segment:
     id: int = 0
 
 
+class EngineFailed(RuntimeError):
+    """The STT engine can no longer transcribe; the worker switches to faster-whisper."""
+
+
 def is_hallucination(text, no_speech_prob, avg_logprob):
     norm = text.strip().lower()
     if not norm or all(not c.isalnum() for c in norm) or norm.startswith(CREDITS):

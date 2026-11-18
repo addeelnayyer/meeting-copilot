@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from copilot import config
 from copilot.facts import Facts
@@ -11,7 +12,7 @@ from copilot.llm import LLM, SUGGESTION_SCHEMA, parse_json
 from copilot.providers import GeminiProvider, Provider
 from copilot.rag import split_text
 from copilot.hotkeys import to_pynput, to_win32
-from copilot.stt import Segment, is_hallucination, whisper_settings
+from copilot.stt import Segment, is_hallucination, stt_engine, whisper_settings
 from copilot.transcript import Transcript
 from copilot.vad import Chunker
 
@@ -300,6 +301,17 @@ def test_whisper_auto_picks_gpu_or_cpu_defaults(monkeypatch):
     monkeypatch.setattr(config, "WHISPER_MODEL", "base")
     monkeypatch.setattr(config, "WHISPER_DEVICE", "cpu")
     assert whisper_settings(1) == ("base", "cpu", "int8")
+
+
+def test_stt_engine_resolves_auto_and_rejects_unknown(monkeypatch):
+    monkeypatch.setattr(config, "STT_ENGINE", "auto")
+    assert stt_engine() == "faster-whisper"
+    for name in ("faster-whisper", "whisperkit"):
+        monkeypatch.setattr(config, "STT_ENGINE", name)
+        assert stt_engine() == name
+    monkeypatch.setattr(config, "STT_ENGINE", "vosk")
+    with pytest.raises(ValueError, match="STT_ENGINE"):
+        stt_engine()
 
 
 def test_hotkeys_convert_to_pynput_format():

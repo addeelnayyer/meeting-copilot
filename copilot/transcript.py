@@ -2,6 +2,8 @@
 
 import itertools
 import json
+import os
+import tempfile
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -93,9 +95,10 @@ class Transcript:
             lines = self.session_path.read_text(encoding="utf-8").splitlines()
             lines = [json.dumps(self._record(seg), ensure_ascii=False) if _logged_id(line) == seg.id else line
                      for line in lines]
-            tmp = self.session_path.with_suffix(".tmp")
-            tmp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
-            tmp.replace(self.session_path)
+            fd, tmp = tempfile.mkstemp(dir=self.session_path.parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.writelines(line + "\n" for line in lines)
+            os.replace(tmp, self.session_path)
         except OSError as e:  # e.g. the log is open in another program on Windows
             print(f"Session:  transliteration not logged: {e}")
 
@@ -110,10 +113,8 @@ class Transcript:
 
     @staticmethod
     def _record(seg):
-        rec = {k: v for k, v in asdict(seg).items() if k not in ("t_end", "retracted")}
-        if not rec["transliteration"]:
-            del rec["transliteration"]
-        return rec
+        return {k: v for k, v in asdict(seg).items()
+                if k not in ("t_end", "retracted") and (v or k != "transliteration")}
 
 
 def _logged_id(line):

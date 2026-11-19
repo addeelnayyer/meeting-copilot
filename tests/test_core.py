@@ -557,11 +557,17 @@ def test_meeting_audio_error_is_reported_not_fatal(tmp_path, monkeypatch):
     assert events[-1] == {"type": "meeting", "active": False, "mic": True, "error": "'parec' not found"}
 
 
-def test_meeting_record_is_saved_on_stop(tmp_path, monkeypatch):
+def _recording(a, events, tmp_path, monkeypatch):
+    """The assistant with fake devices, saving its meeting records to a temporary folder."""
     cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
     cap.sources = [cap.mic, cap.loopback]
-    a, events = _meeting_assistant(tmp_path, monkeypatch, lambda: cap)
+    a.open_capture = lambda: cap
     monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    return a, events
+
+
+def test_meeting_record_is_saved_on_stop(tmp_path, monkeypatch):
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()
@@ -580,10 +586,7 @@ def test_meeting_record_is_saved_on_stop(tmp_path, monkeypatch):
 
 
 def test_empty_meeting_writes_no_record(tmp_path, monkeypatch):
-    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
-    cap.sources = [cap.mic, cap.loopback]
-    a, _ = _meeting_assistant(tmp_path, monkeypatch, lambda: cap)
-    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()
@@ -800,10 +803,15 @@ def _speak(a, *segments):
     async def run():
         for s in segments:
             a.on_segment(s)
-        while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
-            await asyncio.gather(*tasks)
+        await _drain()
 
     asyncio.run(run())
+
+
+async def _drain():
+    """Wait for the LLM tasks the assistant started."""
+    while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
+        await asyncio.gather(*tasks)
 
 
 def _urdu(source="Participant", text="آپ کیسے ہیں", t_end=1.0, lang="ur"):
@@ -903,18 +911,13 @@ def _transliterated_meeting(tmp_path, monkeypatch):
             raise RuntimeError("quota")
         return "Aap kaise hain"
 
-    a, _ = _transliterating(tmp_path, monkeypatch, RecordingLLM(reply=reply))
-    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
-    cap.sources = [cap.mic, cap.loopback]
-    a.open_capture = lambda: cap
-    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(reply=reply)), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()
         for s in (_urdu(), seg("User", "Guten Tag.", 3.0), _urdu(text="ٹھیک ہوں", t_end=6.0)):
             a.on_segment(s)
-        while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
-            await asyncio.gather(*tasks)
+        await _drain()
         await a.stop_meeting()  # too few words for a memory call
 
     asyncio.run(run())
@@ -950,11 +953,7 @@ def test_a_cut_off_session_log_line_is_kept_and_the_transliteration_still_arrive
 
 
 def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, monkeypatch):
-    a, _ = _transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1))
-    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
-    cap.sources = [cap.mic, cap.loopback]
-    a.open_capture = lambda: cap
-    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1)), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()

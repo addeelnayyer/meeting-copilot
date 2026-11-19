@@ -275,6 +275,14 @@ class Assistant:
             self.translate = translate
         self.emit({"type": "mode", "proactive": self.proactive, "translate": self.translate})
 
+    @staticmethod
+    def presets():
+        """The preset buttons in the UI language (English when the language has no presets)."""
+        def localized(texts):
+            return texts.get(config.UI_LANGUAGE) or texts["en"]
+        return [{"hotkey": p["hotkey"], "label": localized(p["label"]), "query": localized(p["query"])}
+                for p in config.PRESETS]
+
     def set_provider(self, provider_id):
         self.llm.set_primary(provider_id)
         self.emit(self.llm.describe())

@@ -39,6 +39,7 @@ from .transcript import Transcript
 
 DATA = Path(__file__).with_name("llm_bench.json")
 CALL_TYPES = ("suggestion", "translation", "transliteration", "german")
+KIND_W = max(map(len, CALL_TYPES))  # column width of the call type
 TRANSLITERATED = ("ur",)  # languages whose lines get a transliteration call, as with TRANSLITERATE=ur
 JSON_CALLS = ("suggestion", "german")
 SAMPLES = 5
@@ -147,7 +148,7 @@ async def run_model(provider, model, calls):
         secs = time.perf_counter() - t
         valid, sample = _output(call, text)
         results[call.kind].append(Result(call.label, secs, valid, sample))
-        print(f"  {call.kind:<15} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
+        print(f"  {call.kind:<{KIND_W}} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
     return results
 
 
@@ -160,7 +161,7 @@ def report(results):
     """results: {model: {call type: [Result]}} -> summary table, then the samples of all models side by side."""
     models = list(results)
     print("\n" + "=" * 78)
-    print(f"{'model':<28} {'call type':<16} {'n':>3} {'p50 ms':>7} {'p95 ms':>7}  {'valid JSON':>10}  errors")
+    print(f"{'model':<28} {'call type':<{KIND_W + 1}} {'n':>3} {'p50 ms':>7} {'p95 ms':>7}  {'valid JSON':>10}  errors")
     for model in models:
         for kind in CALL_TYPES:
             rows = results[model][kind]
@@ -168,7 +169,7 @@ def report(results):
             p50, p95 = (f"{np.percentile(lat, q) * 1000:.0f}" for q in (50, 95)) if lat else ("-", "-")
             valid = f"{sum(r.valid for r in rows)}/{len(rows)}" if kind in JSON_CALLS else ""
             errors = sum(r.secs is None for r in rows)
-            print(f"{model:<28} {kind:<16} {len(rows):>3} {p50:>7} {p95:>7}  {valid:>10}  {errors or ''}")
+            print(f"{model:<28} {kind:<{KIND_W + 1}} {len(rows):>3} {p50:>7} {p95:>7}  {valid:>10}  {errors or ''}")
     for kind in CALL_TYPES:
         rows = results[models[0]][kind]
         for n, i in enumerate(_picks(len(rows)), 1):

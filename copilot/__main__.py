@@ -118,7 +118,8 @@ async def main(args):
                           Memory(), open_capture)
     assistant.set_mode(proactive=True, translate=False)
     hub.publish(llm.describe())
-    print(f"LLM:      {llm.primary.label} ({llm.primary.model}), fallback Ollama ({llm.fallback.model})")
+    primary = "Ollama" if llm.primary is llm.fallback else llm.primary.label  # the Ollama label is UI text
+    print(f"LLM:      {primary} ({llm.primary.model}), fallback Ollama ({llm.fallback.model})")
     hub.publish({"type": "facts", "text": assistant.facts.render()})
     hub.publish({"type": "stt", "ready": False})
     hub.publish(assistant.meeting_state())

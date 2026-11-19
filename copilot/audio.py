@@ -18,6 +18,7 @@ import numpy as np
 import soxr
 
 from . import config
+from .strings import UiError
 
 if sys.platform == "win32":
     import pyaudiowpatch as pyaudio
@@ -60,7 +61,7 @@ def find_mic(p, name=""):
             if (d["hostApi"] == wasapi["index"] and d["maxInputChannels"] > 0
                     and not d.get("isLoopbackDevice") and name.lower() in d["name"].lower()):
                 return d
-        raise RuntimeError(f"No WASAPI microphone matching '{name}'")
+        raise UiError("audio.no_wasapi_mic", name=name)
     return p.get_device_info_by_index(wasapi["defaultInputDevice"])
 
 
@@ -69,7 +70,7 @@ def find_loopback(p, name=""):
         for d in p.get_loopback_device_info_generator():
             if name.lower() in d["name"].lower():
                 return d
-        raise RuntimeError(f"No loopback device matching '{name}'")
+        raise UiError("audio.no_loopback", name=name)
     return p.get_default_wasapi_loopback()
 
 
@@ -120,7 +121,7 @@ def find_pulse_source(name, default):
         source = line.split("\t")[1]
         if name.lower() in source.lower():
             return source
-    raise RuntimeError(f"No PulseAudio/PipeWire source matching '{name}'")
+    raise UiError("audio.no_pulse_source", name=name)
 
 
 class ParecSource(_Source):
@@ -161,7 +162,7 @@ def find_sd_input(name):
     for d in sd.query_devices():
         if d["max_input_channels"] > 0 and name.lower() in d["name"].lower():
             return d
-    raise RuntimeError(f"No input device matching '{name}'")
+    raise UiError("audio.no_input", name=name)
 
 
 class SoundDeviceSource(_Source):
@@ -209,14 +210,12 @@ class Capture:
             try:
                 loopback = find_sd_input(loopback_name or MAC_LOOPBACK_DEFAULT)
             except RuntimeError as e:
-                raise RuntimeError(f"{e}. macOS has no built-in loopback: install BlackHole and route "
-                                   f"the meeting audio to it (see README), or set LOOPBACK_DEVICE.") from None
+                raise UiError("audio.no_mac_loopback", error=e) from None
             self.mic = SoundDeviceSource(USER, find_sd_input(mic_name))
             self.loopback = SoundDeviceSource(PARTICIPANT, loopback)
         else:
             if not shutil.which("parec"):
-                raise RuntimeError("'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, "
-                                   "Arch: libpulse).")
+                raise UiError("audio.no_parec")
             self.mic = ParecSource(USER, find_pulse_source(mic_name, "@DEFAULT_SOURCE@"))
             self.loopback = ParecSource(PARTICIPANT, find_pulse_source(loopback_name, "@DEFAULT_MONITOR@"))
         self.sources = [self.mic, self.loopback]

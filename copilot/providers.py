@@ -13,6 +13,7 @@ import re
 import httpx
 
 from . import config
+from .strings import t
 
 
 class Provider:
@@ -184,7 +185,11 @@ class OpenAICompatProvider(Provider):
 
 
 class OllamaProvider(Provider):
-    id, label = "ollama", "Ollama (lokal)"
+    id = "ollama"
+
+    @property
+    def label(self):
+        return t("ollama.label")
 
     def __init__(self):
         self.model = config.OLLAMA_MODEL

@@ -623,3 +623,51 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
+
+
+def test_every_ui_language_has_the_same_keys_and_placeholders():
+    import string
+
+    from copilot.strings import TABLES
+
+    def shape(table):
+        return {key: sorted(f for _, f, _, _ in string.Formatter().parse(text) if f) for key, text in table.items()}
+
+    assert set(TABLES) == {"en", "de"}
+    assert shape(TABLES["de"]) == shape(TABLES["en"])
+
+
+def _first_events_on_connect(n):
+    from fastapi.testclient import TestClient
+
+    from copilot.server import Hub, create_app
+
+    hub = Hub()
+    hub.state["meeting"] = {"type": "meeting", "active": False, "mic": True, "error": ""}
+    window = SimpleNamespace(apply=lambda: True)
+    with TestClient(create_app(hub, None, window)) as client, client.websocket_connect("/ws") as ws:
+        return [ws.receive_json() for _ in range(n)]
+
+
+@pytest.mark.parametrize("lang, start, saved", [
+    ("en", "Start meeting", "Meeting saved: a.md"),
+    ("de", "Meeting starten", "Meeting gespeichert: a.md"),
+])
+def test_page_gets_its_ui_language_strings_before_any_other_event(lang, start, saved, monkeypatch):
+    from copilot import strings
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    first, *rest = _first_events_on_connect(3)
+    assert first["type"] == "strings" and first["strings"]["meeting.start"] == start
+    assert strings.t("meeting.saved", file="a.md") == saved
+    assert "strings" not in [ev["type"] for ev in rest]
+
+
+def test_unknown_ui_language_falls_back_to_english_with_a_hint(monkeypatch, capsys):
+    from copilot import strings
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", "klingon")
+    monkeypatch.setattr(strings, "_hinted", set())
+    [first] = _first_events_on_connect(1)
+    assert first["lang"] == "en" and first["strings"]["meeting.stop"] == "End meeting"
+    assert "UI_LANGUAGE" in capsys.readouterr().out

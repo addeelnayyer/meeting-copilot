@@ -139,7 +139,7 @@
 </header>
 
 <div id="bar">
-  <button id="meeting">Meeting starten</button>
+  <button id="meeting"></button>
   <button id="mic" class="tog" title="Mikrofon an/aus (Strg+Alt+M). Die Teilnehmer werden weiter gehört.">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
     <span>Mikro an</span>
@@ -166,6 +166,9 @@ const MAX_CARDS = 6;
 let ws, mode = { proactive: true, translate: false }, lastTurn = null;
 let meeting = { active: false, mic: true, error: "" }, kb = null, ollamaNote = "", saved = "";
 let win = { on_top: true, opacity: 1 };
+// UI strings by id, sent by the server ahead of any other event (UI_LANGUAGE)
+let S = {};
+const t = (id, vals = {}) => (S[id] ?? "").replace(/\{(\w+)\}/g, (_, k) => vals[k] ?? "");
 const MIC_ICONS = { on: '<path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>', off: '<path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5.1 2.1"/><path d="M5 11a7 7 0 0 0 11.4 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18"/>' };
 // Reading time: a new proactive card waits until the current one has been shown for readMs,
 // you have stopped talking, and nothing is pinned. Only the newest waiting card is kept.
@@ -270,23 +273,23 @@ function clearScreen() {
 
 function renderMeeting() {
   const btn = $("meeting");
-  btn.textContent = meeting.active ? "Meeting beenden" : "Meeting starten";
+  btn.textContent = t(meeting.active ? "meeting.stop" : "meeting.start");
   btn.classList.toggle("live", meeting.active);
   const mic = $("mic");
   mic.classList.toggle("muted", !meeting.mic);
   mic.querySelector("svg").innerHTML = MIC_ICONS[meeting.mic ? "on" : "off"];
   mic.querySelector("span").textContent = meeting.mic ? "Mikro an" : "Mikro aus";
   const empty = $("empty");
-  if (empty) empty.textContent = meeting.active ? "Warte auf den Gesprächspartner …"
-    : "Klicke auf „Meeting starten“, sobald dein Gespräch beginnt.";
+  if (empty) empty.textContent = meeting.active ? t("meeting.waiting")
+    : t("meeting.idle_hint", { button: t("meeting.start") });
   renderNotice();
 }
 
 function renderNotice() {
   const items = [];
   if (meeting.error) items.push(`<div class="n err">Audio: ${esc(meeting.error)}</div>`);
-  if (saved) items.push(`<div class="n info">Meeting gespeichert: ${esc(saved.split(/[\\/]/).pop())}
-    <button class="link" data-open="meetings">Ordner öffnen</button></div>`);
+  if (saved) items.push(`<div class="n info">${esc(t("meeting.saved", { file: saved.split(/[\\/]/).pop() }))}
+    <button class="link" data-open="meetings">${esc(t("open_folder"))}</button></div>`);
   if (ollamaNote) items.push(`<div class="n warn">${esc(ollamaNote)}</div>`);
   if (kb && kb.files === 0) items.push(`<div class="n info">Deine Wissensbasis ist noch leer. Lege Markdown-Dateien
     (.md) in den Ordner, z. B. Produkte, Preise, FAQ oder deinen Lebenslauf. Sie werden sofort durchsucht.
@@ -339,6 +342,7 @@ function providers(ev) {
 }
 
 const handlers = {
+  strings: (ev) => { S = ev.strings; document.documentElement.lang = ev.lang; renderMeeting(); },
   providers,
   presets,
   segment,

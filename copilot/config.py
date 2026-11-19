@@ -40,6 +40,8 @@ WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")  # auto (one of LANGUAGES, s
 LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if code.strip()]
 # Force the reply language of the suggestions (e.g. "en"); empty = as the prompt says.
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
+# Language of the window's labels and notes: en | de (unknown = en). Suggestions follow REPLY_LANGUAGE.
+UI_LANGUAGE = _env("UI_LANGUAGE", "de")
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200
 # WhisperKit (macOS, Homebrew whisperkit-cli): an argmaxinc/whisperkit-coreml model ID

@@ -144,9 +144,10 @@ LANGUAGES=de,en,tr        # German speaker, meetings in German, English and Turk
 LANGUAGES=ar,en           # Arabic speaker; English segments are translated into Arabic
 WHISPER_LANGUAGE=fr       # only French: skips detection, a little faster
 REPLY_LANGUAGE=en         # force English suggestions (by default: German, or the interviewer's language)
+UI_LANGUAGE=en            # English window (en | de); so far only the meeting button and the saved note
 ```
 
-The suggestion prompts are written for German client calls and German/English interviews; the window labels are German. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
+The suggestion prompts are written for German client calls and German/English interviews; the window labels are German by default (`UI_LANGUAGE=en` is being rolled out, starting with the meeting button). For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 
 ## Run
 

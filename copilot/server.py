@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from . import config, strings
 
 # Event types replayed to a newly connected (or reloaded) page.
-_HISTORY_TYPES = {"segment", "retract", "translation", "suggestion", "answer"}
+_HISTORY_TYPES = {"segment", "retract", "translation", "transliteration", "suggestion", "answer"}
 
 
 def reveal(path, text=False):
@@ -82,7 +82,7 @@ def create_app(hub, assistant, window):
     async def ws_endpoint(ws: WebSocket):
         await ws.accept()
         await ws.send_json(strings.event())  # first, so the page renders in its language from the start
-        await ws.send_json({"type": "presets", "presets": config.PRESETS})
+        await ws.send_json({"type": "presets", "presets": assistant.presets()})
         await ws.send_json({"type": "ui", "read_s": config.SUGGESTION_READ_S, "single": config.SINGLE_SUGGESTION})
         for event in hub.state.values():
             await ws.send_json(event)

@@ -13,6 +13,10 @@ def _env(name, default):
     return os.environ.get(name) or default
 
 
+def _env_list(name, default, sep=","):
+    return [item.strip() for item in _env(name, default).split(sep) if item.strip()]
+
+
 # --- Audio ---
 SAMPLE_RATE = 16000
 MIC_DEVICE = _env("MIC_DEVICE", "")  # substring of device name; empty = system default
@@ -37,9 +41,12 @@ WHISPER_DEFAULTS = {"cuda": ("large-v3-turbo", "float16"), "cpu": ("small", "int
 WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")  # auto (one of LANGUAGES, sticky per speaker) | any code
 # Spoken languages (ISO 639-1, any of Whisper's ~99). Detection picks among these; the first is
 # yours: translation goes into it (and from it into the second).
-LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if code.strip()]
-# Force the reply language of the suggestions (e.g. "en"); empty = as the prompt says.
+LANGUAGES = _env_list("LANGUAGES", "de,en")
+# Force the reply language of the suggestions and the meeting memory (e.g. "en");
+# empty = suggestions as the prompt says, memory in German.
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
+# Languages whose lines are rewritten in Latin script (e.g. "ur": Urdu -> Roman Urdu); empty = off.
+TRANSLITERATE = _env_list("TRANSLITERATE", "")
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200
 # WhisperKit (macOS, Homebrew whisperkit-cli): an argmaxinc/whisperkit-coreml model ID
@@ -91,7 +98,7 @@ CUSTOM_MODEL = _env("CUSTOM_MODEL", "")
 OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = _env("OLLAMA_MODEL", "granite4:7b-a1b-h")
 OLLAMA_TIMEOUT_S = 30
-TRANSLATE_MAX_WAIT_S = 10  # translations run one at a time; a line waiting longer is skipped
+PLAIN_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
 
 # --- Assistant ---
 # React when the participant has finished a turn (this long without new speech), but during a
@@ -110,7 +117,7 @@ FACTS_FILE = ROOT / "facts.json"
 FLASHCARDS_FILE = ROOT / "knowledge_base.json"
 KB_DIR = ROOT / "knowledge_base"
 # Extra files or folders to index, separated by ";" (e.g. interview prep notes in a vault).
-KB_EXTRA_PATHS = [Path(p.strip()) for p in _env("KB_EXTRA_PATHS", "").split(";") if p.strip()]
+KB_EXTRA_PATHS = [Path(p) for p in _env_list("KB_EXTRA_PATHS", "", sep=";")]
 DB_DIR = ROOT / "db_py"
 DB_TABLE = "docs"
 # German/English. For other languages e.g. "intfloat/multilingual-e5-large" (re-indexes automatically).
@@ -128,18 +135,27 @@ if not SYSTEM_PROMPT_FILE.is_file():  # cmd.exe sets PROMPT=$P$G for its own pro
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 # --- Server / UI ---
-# Language of the window's own text (copilot/strings.py): en | de; unknown = en with a hint.
+# Language of the window's own text (copilot/strings.py) and the presets: en | de; unknown = en with a hint.
 UI_LANGUAGE = _env("UI_LANGUAGE", "de")
 HOST = "127.0.0.1"
 PORT = int(_env("PORT", "8765"))
 WINDOW_SIZE = (520, 900)
 
 # --- Hotkeys ---
-# Shown as buttons above the question box and bound to the hotkeys.
+# Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label
+# and question in each UI language (the question is sent to the LLM and repeated on the answer card).
 PRESETS = [
-    {"hotkey": "ctrl+alt+1", "label": "Was antworten?", "query": "Was soll ich jetzt antworten?"},
-    {"hotkey": "ctrl+alt+2", "label": "Schwächen", "query": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."},
-    {"hotkey": "ctrl+alt+3", "label": "Zusammenfassung", "query": "Fasse die letzten Minuten in 2 Sätzen zusammen."},
+    {"hotkey": "ctrl+alt+1",
+     "label": {"en": "What should I answer?", "de": "Was antworten?"},
+     "query": {"en": "What should I answer now?", "de": "Was soll ich jetzt antworten?"}},
+    {"hotkey": "ctrl+alt+2",
+     "label": {"en": "Weak points", "de": "Schwächen"},
+     "query": {"en": "Point out the weak points in their offer or argument.",
+               "de": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."}},
+    {"hotkey": "ctrl+alt+3",
+     "label": {"en": "Summary", "de": "Zusammenfassung"},
+     "query": {"en": "Summarize the last few minutes in 2 sentences.",
+               "de": "Fasse die letzten Minuten in 2 Sätzen zusammen."}},
 ]
 HOTKEY_FOCUS = "ctrl+alt+space"
 HOTKEY_TRANSLATE = "ctrl+alt+t"

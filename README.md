@@ -143,7 +143,7 @@ Whisper transcribes about 99 languages. `LANGUAGES` (default `de,en`) lists the 
 LANGUAGES=de,en,tr        # German speaker, meetings in German, English and Turkish
 LANGUAGES=ar,en           # Arabic speaker; English segments are translated into Arabic
 WHISPER_LANGUAGE=fr       # only French: skips detection, a little faster
-REPLY_LANGUAGE=en         # force English suggestions (by default: German, or the interviewer's language)
+REPLY_LANGUAGE=en         # force English suggestions and memory (by default: German, or the interviewer's language)
 ```
 
 The suggestion prompts are written for German client calls and German/English interviews; the window labels are German. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
@@ -199,7 +199,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
 - **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
-- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Gedächtnis" in the window, and saved as `sessions/<timestamp>.memory.md`.
+- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Gedächtnis" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
 - **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting.
 

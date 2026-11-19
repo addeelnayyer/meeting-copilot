@@ -38,7 +38,8 @@ WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")  # auto (one of LANGUAGES, s
 # Spoken languages (ISO 639-1, any of Whisper's ~99). Detection picks among these; the first is
 # yours: translation goes into it (and from it into the second).
 LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if code.strip()]
-# Force the reply language of the suggestions (e.g. "en"); empty = as the prompt says.
+# Force the reply language of the suggestions and the meeting memory (e.g. "en");
+# empty = suggestions as the prompt says, memory in German.
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200

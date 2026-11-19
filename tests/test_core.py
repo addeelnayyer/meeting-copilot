@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -224,22 +225,52 @@ def test_openai_compatible_downgrades_json_mode():
     assert calls == ["json_schema", "json_object", None] and p._json_mode == "prompt"
 
 
+def _ollama_recording(reply):
+    """An OllamaProvider whose HTTP client records each request body and answers with `reply`."""
+    from copilot.providers import OllamaProvider
+
+    p, sent = OllamaProvider(), []
+
+    def handle(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": reply}})
+
+    p._http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return p, sent
+
+
+@pytest.mark.parametrize("schema, reply", [
+    (SUGGESTION_SCHEMA, '{"trigger": "ok", "suggestions": [], "new_facts": []}'),
+    (None, "Hallo Welt"),
+])
+def test_ollama_chat_turns_thinking_off(schema, reply):
+    p, sent = _ollama_recording(reply)
+    assert asyncio.run(p.complete("s", "p", schema)) == reply
+    assert sent[0]["think"] is False and sent[0].get("format") == schema
+
+
+def test_ollama_warmup_turns_thinking_off():
+    p, sent = _ollama_recording("")
+    asyncio.run(p.warmup())
+    assert sent[0]["think"] is False and sent[0]["messages"] == []
+
+
 def test_schema_is_closed_for_strict_providers():
     assert SUGGESTION_SCHEMA["additionalProperties"] is False
     assert SUGGESTION_SCHEMA["properties"]["suggestions"]["items"]["additionalProperties"] is False
 
 
 # --- memory --------------------------------------------------------------------------
-def test_memory_summarizes_only_new_segments(tmp_path):
-    from copilot import memory
+def _memory_assistant(tmp_path, reply=None):
+    """A fake assistant whose LLM records every memory call as (system, prompt)."""
     from copilot.memory import Memory
 
-    calls = []
-
     class FakeLLM:
+        calls = []
+
         async def generate(self, system, prompt):
-            calls.append(prompt)
-            return f"- Zusammenfassung {len(calls)}", "gemini", 0.5
+            self.calls.append((system, prompt))
+            return reply or f"- Zusammenfassung {len(self.calls)}", "gemini", 0.5
 
     class FakeAssistant:
         transcript = Transcript()
@@ -248,21 +279,60 @@ def test_memory_summarizes_only_new_segments(tmp_path):
         events = []
         emit = events.append
 
-    a = FakeAssistant()
+    return FakeAssistant()
+
+
+def _summarize_once(tmp_path, reply):
+    from copilot import memory
+
+    a = _memory_assistant(tmp_path, reply)
+    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
+    asyncio.run(memory.summarize(a))
+    return a.llm.calls[0][0], a
+
+
+def test_memory_summarizes_only_new_segments(tmp_path):
+    from copilot import memory
+
+    a = _memory_assistant(tmp_path)
+    prompts = lambda: [prompt for _, prompt in a.llm.calls]
     a.transcript.add(seg("Participant", "Kurz.", 1.0))
     asyncio.run(memory.summarize(a))
-    assert calls == []  # below MEMORY_MIN_WORDS
+    assert prompts() == []  # below MEMORY_MIN_WORDS
 
     a.transcript.add(seg("Participant", "Wir brauchen die Website bis Ende März " * 6, 5.0))
     asyncio.run(memory.summarize(a))
-    assert "Ende März" in calls[0] and a.memory.text == "- Zusammenfassung 1"
+    assert "Ende März" in prompts()[0] and a.memory.text == "- Zusammenfassung 1"
     assert (tmp_path / "s.memory.md").read_text(encoding="utf-8") == "- Zusammenfassung 1"
 
     a.transcript.add(seg("User", "Das bekommen wir hin, versprochen " * 8, 30.0))
     asyncio.run(memory.summarize(a))
-    assert "Ende März" not in calls[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
-    assert "- Zusammenfassung 1" in calls[1]  # previous memory is carried forward
+    assert "Ende März" not in prompts()[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
+    assert "- Zusammenfassung 1" in prompts()[1]  # previous memory is carried forward
     assert a.events[-1]["type"] == "memory"
+
+
+def test_memory_follows_reply_language(tmp_path, monkeypatch):
+    from copilot import export
+
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
+    reply = "## Discussion\n- Website by the end of March"
+    system, a = _summarize_once(tmp_path, reply)
+    assert "'en'" in system and "German" not in system
+    assert "## Discussion" in system and "## Decisions & commitments" in system and "## Verlauf" not in system
+    # the panel and the meeting record show the memory as written
+    assert a.events[-1] == {"type": "memory", "text": reply, "engine": "gemini", "ms": 500}
+    record = export.render(a.transcript.segments, a.memory, Facts(tmp_path / "facts.json"), [], 0.0, 60.0)
+    assert reply in record
+
+
+def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
+    system, _ = _summarize_once(tmp_path, "- Zusammenfassung")
+    assert "in German" in system
+    for heading in ("## Verlauf", "## Entscheidungen & Zusagen", "## Offene Punkte & Einwände",
+                    "## Stimmung & Prioritäten der Teilnehmer"):
+        assert heading in system
 
 
 def test_kb_sources_include_extra_files_and_folders(tmp_path, monkeypatch):

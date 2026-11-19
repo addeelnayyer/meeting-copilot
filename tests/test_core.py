@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -222,6 +223,36 @@ def test_openai_compatible_downgrades_json_mode():
     p._client = type("C", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
     assert parse_json(asyncio.run(p.complete("s", "p", SUGGESTION_SCHEMA)))["trigger"] == "ok"
     assert calls == ["json_schema", "json_object", None] and p._json_mode == "prompt"
+
+
+def _ollama_recording(reply):
+    """An OllamaProvider whose HTTP client records each request body and answers with `reply`."""
+    from copilot.providers import OllamaProvider
+
+    p, sent = OllamaProvider(), []
+
+    def handle(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": reply}})
+
+    p._http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return p, sent
+
+
+@pytest.mark.parametrize("schema, reply", [
+    (SUGGESTION_SCHEMA, '{"trigger": "ok", "suggestions": [], "new_facts": []}'),
+    (None, "Hallo Welt"),
+])
+def test_ollama_chat_turns_thinking_off(schema, reply):
+    p, sent = _ollama_recording(reply)
+    assert asyncio.run(p.complete("s", "p", schema)) == reply
+    assert sent[0]["think"] is False and sent[0].get("format") == schema
+
+
+def test_ollama_warmup_turns_thinking_off():
+    p, sent = _ollama_recording("")
+    asyncio.run(p.warmup())
+    assert sent[0]["think"] is False and sent[0]["messages"] == []
 
 
 def test_schema_is_closed_for_strict_providers():

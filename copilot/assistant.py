@@ -1,4 +1,5 @@
-"""Orchestration: transcript in, proactive suggestions / push-to-ask answers / translations out.
+"""Orchestration: transcript in, proactive suggestions / push-to-ask answers / translations and
+transliterations out.
 
 All methods run on the asyncio loop. Segments arrive from the STT thread via
 loop.call_soon_threadsafe(assistant.on_segment, seg).
@@ -25,6 +26,12 @@ TRANSLATE_SYSTEM = (
     "You are a live interpreter. Translate the user's text into the language with the ISO 639-1 code "
     "'{target}'. Output only the translation, no quotes, no comments."
 )
+TRANSLITERATE_SYSTEM = (
+    "Rewrite the user's text, spoken in the language with the ISO 639-1 code '{lang}', in Latin script "
+    "(e.g. Urdu as Roman Urdu). Do not translate it: keep the same words in the same language. Keep "
+    "English and other words already in Latin script unchanged, and keep names and numbers intact. "
+    "Output only the rewritten text, no quotes, no comments."
+)
 REPLY_LANGUAGE_RULE = "\n# Language\nWrite every suggestion in the language with the ISO 639-1 code '{lang}'.\n"
 
 
@@ -40,7 +47,7 @@ class Assistant:
         self.language_rule = REPLY_LANGUAGE_RULE.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
         self.proactive = True
         self.translate = False
-        self._translating = asyncio.Lock()
+        self._one_at_a_time = asyncio.Lock()  # translations and transliterations, one at a time
         self.engine = "-"
         self._timer = None
         self._pending_since = None
@@ -129,6 +136,8 @@ class Assistant:
             return
         self.emit({"type": "segment", "id": seg.id, "source": seg.source, "text": seg.text,
                    "lang": seg.lang, "new_turn": new_turn, "stt_ms": round(seg.latency * 1000)})
+        if seg.lang in config.TRANSLITERATE:
+            asyncio.ensure_future(self._transliterate(seg))
         if seg.source != PARTICIPANT:
             return
         if self.translate:
@@ -227,23 +236,36 @@ class Assistant:
                     "suggestions": self._limit(result.get("suggestions") or []),
                     "engine": engine, "ms": round(secs * 1000), "ts": time.time()})
 
-    # --- translation -----------------------------------------------------------
+    # --- translation / transliteration ------------------------------------------
     async def _translate(self, seg):
         mine = config.LANGUAGES[0]
         target = mine if seg.lang != mine else (config.LANGUAGES[1:] or ["en"])[0]
-        queued = time.monotonic()
+        result = await self._plain(seg, TRANSLATE_SYSTEM.format(target=target), "Translation")
+        if result:
+            self.emit({"type": "translation", "id": seg.id, "source": seg.source, "target": target.upper(),
+                       **result})
+
+    async def _transliterate(self, seg):
+        result = await self._plain(seg, TRANSLITERATE_SYSTEM.format(lang=seg.lang), "Transliteration")
+        if result:
+            self.emit({"type": "transliteration", "id": seg.id, "source": seg.source, **result})
+
+    async def _plain(self, seg, system, label):
+        """Plain-text LLM call for one line: {text, engine, ms}, or None when skipped or failed.
+        A line retracted as an echo, or from a meeting that has ended, is skipped."""
+        transcript, queued = self.transcript, time.monotonic()
+        gone = lambda: seg.retracted or self.transcript is not transcript  # noqa: E731
         # One at a time: a local model can't keep up with every line in parallel, and a pile-up
         # made all of them time out. Lines that waited too long are skipped to catch up.
-        async with self._translating:
-            if time.monotonic() - queued > config.TRANSLATE_MAX_WAIT_S:
-                return
+        async with self._one_at_a_time:
+            if gone() or time.monotonic() - queued > config.PLAIN_MAX_WAIT_S:
+                return None
             try:
-                text, engine, secs = await self.llm.generate(TRANSLATE_SYSTEM.format(target=target), seg.text)
+                text, engine, secs = await self.llm.generate(system, seg.text)
             except Exception as e:
-                self.emit({"type": "error", "text": f"Translation: {str(e) or type(e).__name__}"})
-                return
-        self.emit({"type": "translation", "id": seg.id, "source": seg.source, "text": text.strip(),
-                   "target": target.upper(), "engine": engine, "ms": round(secs * 1000)})
+                self.emit({"type": "error", "text": f"{label}: {str(e) or type(e).__name__}"})
+                return None
+        return None if gone() else {"text": text.strip(), "engine": engine, "ms": round(secs * 1000)}
 
     # --- toggles / helpers ---------------------------------------------------
     def set_mode(self, proactive=None, translate=None):

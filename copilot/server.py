@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from . import config
 
 # Event types replayed to a newly connected (or reloaded) page.
-_HISTORY_TYPES = {"segment", "retract", "translation", "suggestion", "answer"}
+_HISTORY_TYPES = {"segment", "retract", "translation", "transliteration", "suggestion", "answer"}
 
 
 def reveal(path, text=False):

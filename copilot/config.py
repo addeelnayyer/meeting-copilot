@@ -13,6 +13,10 @@ def _env(name, default):
     return os.environ.get(name) or default
 
 
+def _env_list(name, default, sep=","):
+    return [item.strip() for item in _env(name, default).split(sep) if item.strip()]
+
+
 # --- Audio ---
 SAMPLE_RATE = 16000
 MIC_DEVICE = _env("MIC_DEVICE", "")  # substring of device name; empty = system default
@@ -37,11 +41,11 @@ WHISPER_DEFAULTS = {"cuda": ("large-v3-turbo", "float16"), "cpu": ("small", "int
 WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")  # auto (one of LANGUAGES, sticky per speaker) | any code
 # Spoken languages (ISO 639-1, any of Whisper's ~99). Detection picks among these; the first is
 # yours: translation goes into it (and from it into the second).
-LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if code.strip()]
+LANGUAGES = _env_list("LANGUAGES", "de,en")
 # Force the reply language of the suggestions (e.g. "en"); empty = as the prompt says.
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
 # Languages whose lines are rewritten in Latin script (e.g. "ur": Urdu -> Roman Urdu); empty = off.
-TRANSLITERATE = [code.strip() for code in _env("TRANSLITERATE", "").split(",") if code.strip()]
+TRANSLITERATE = _env_list("TRANSLITERATE", "")
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200
 # WhisperKit (macOS, Homebrew whisperkit-cli): an argmaxinc/whisperkit-coreml model ID
@@ -93,7 +97,7 @@ CUSTOM_MODEL = _env("CUSTOM_MODEL", "")
 OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = _env("OLLAMA_MODEL", "granite4:7b-a1b-h")
 OLLAMA_TIMEOUT_S = 30
-TRANSLATE_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
+PLAIN_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
 
 # --- Assistant ---
 # React when the participant has finished a turn (this long without new speech), but during a
@@ -112,7 +116,7 @@ FACTS_FILE = ROOT / "facts.json"
 FLASHCARDS_FILE = ROOT / "knowledge_base.json"
 KB_DIR = ROOT / "knowledge_base"
 # Extra files or folders to index, separated by ";" (e.g. interview prep notes in a vault).
-KB_EXTRA_PATHS = [Path(p.strip()) for p in _env("KB_EXTRA_PATHS", "").split(";") if p.strip()]
+KB_EXTRA_PATHS = [Path(p) for p in _env_list("KB_EXTRA_PATHS", "", sep=";")]
 DB_DIR = ROOT / "db_py"
 DB_TABLE = "docs"
 # German/English. For other languages e.g. "intfloat/multilingual-e5-large" (re-indexes automatically).

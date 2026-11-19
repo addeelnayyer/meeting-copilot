@@ -60,8 +60,8 @@ def test_clicks_are_dropped():
 
 
 # --- transcript ------------------------------------------------------------------
-def seg(source, text, t_end, duration=2.0):
-    return Segment(source, text, "de", duration, t_end)
+def seg(source, text, t_end, duration=2.0, lang="de"):
+    return Segment(source, text, lang, duration, t_end)
 
 
 def test_turn_merging_and_speaker_switch():
@@ -524,43 +524,38 @@ def test_empty_meeting_writes_no_record(tmp_path, monkeypatch):
 
 
 # --- languages -----------------------------------------------------------------------
+class RecordingLLM:
+    def __init__(self, reply=lambda prompt: "Roman " + prompt, delay=0.0, error=None):
+        self.calls, self.reply, self.delay, self.error = [], reply, delay, error
+
+    async def generate(self, system, prompt):
+        self.calls.append((system, prompt))
+        await asyncio.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return self.reply(prompt), "ollama", self.delay
+
+
 def test_translation_goes_into_your_language_and_from_it_into_the_second(tmp_path, monkeypatch):
-    targets = []
-
-    class FakeLLM:
-        async def generate(self, system, prompt):
-            targets.append(system.split("'")[-2])
-            return "x", "ollama", 0.1
-
     a, _ = _meeting_assistant(tmp_path, monkeypatch, None)
-    a.llm = FakeLLM()
+    a.llm = RecordingLLM()
     monkeypatch.setattr(config, "LANGUAGES", ["ar", "de", "en"])
     for lang in ("tr", "ar"):
-        s = seg("Participant", "Merhaba", 1.0)
-        s.lang = lang
-        asyncio.run(a._translate(s))
-    assert targets == ["ar", "de"]
+        asyncio.run(a._translate(seg("Participant", "Merhaba", 1.0, lang=lang)))
+    assert [system.split("'")[-2] for system, _ in a.llm.calls] == ["ar", "de"]
 
 
 def test_translations_run_one_at_a_time_and_stale_lines_are_skipped(tmp_path, monkeypatch):
-    calls = []
-
-    class SlowLLM:
-        async def generate(self, system, prompt):
-            calls.append(prompt)
-            await asyncio.sleep(0.2)
-            return prompt, "ollama", 0.2
-
     a, events = _meeting_assistant(tmp_path, monkeypatch, None)
-    a.llm = SlowLLM()
-    monkeypatch.setattr(config, "TRANSLATE_MAX_WAIT_S", 0.3)
+    a.llm = RecordingLLM(reply=lambda prompt: prompt, delay=0.2)
+    monkeypatch.setattr(config, "PLAIN_MAX_WAIT_S", 0.3)
 
     async def run():
         await asyncio.gather(*(a._translate(seg("Participant", f"line {i}", 1.0)) for i in range(4)))
 
     asyncio.run(run())
     # line 0 runs at once, line 1 waits 0.2 s, lines 2 and 3 have waited 0.4 s > 0.3 s
-    assert calls == ["line 0", "line 1"]
+    assert [prompt for _, prompt in a.llm.calls] == ["line 0", "line 1"]
     assert [e["text"] for e in events if e["type"] == "translation"] == ["line 0", "line 1"]
 
 
@@ -626,32 +621,19 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
 
 
 # --- transliteration -------------------------------------------------------------------
-class RecordingLLM:
-    def __init__(self, reply=lambda prompt: "Roman " + prompt, delay=0.0, error=None):
-        self.calls, self.reply, self.delay, self.error = [], reply, delay, error
-
-    async def generate(self, system, prompt):
-        self.calls.append((system, prompt))
-        await asyncio.sleep(self.delay)
-        if self.error:
-            raise self.error
-        return self.reply(prompt), "ollama", self.delay
-
-
-def _speak(a, *segments, settle=0.05):
-    """Feed segments into the assistant on a loop and let its LLM tasks finish."""
+def _speak(a, *segments):
+    """Feed segments into the assistant on a loop and wait for the LLM tasks it starts."""
     async def run():
         for s in segments:
             a.on_segment(s)
-        await asyncio.sleep(settle)
+        while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
+            await asyncio.gather(*tasks)
 
     asyncio.run(run())
 
 
 def _urdu(source="Participant", text="آپ کیسے ہیں", t_end=1.0, lang="ur"):
-    s = seg(source, text, t_end)
-    s.lang = lang
-    return s
+    return seg(source, text, t_end, lang=lang)
 
 
 def _transliterating(tmp_path, monkeypatch, llm=None, langs=("ur",)):
@@ -706,8 +688,8 @@ def test_the_transcript_context_keeps_the_original_script(tmp_path, monkeypatch)
 def test_transliteration_shares_the_translation_queue_and_skips_stale_lines(tmp_path, monkeypatch):
     a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.2))
     a.translate = True
-    monkeypatch.setattr(config, "TRANSLATE_MAX_WAIT_S", 0.3)
-    _speak(a, _urdu(text="ایک"), _urdu(text="دو", t_end=10.0), settle=0.8)
+    monkeypatch.setattr(config, "PLAIN_MAX_WAIT_S", 0.3)
+    _speak(a, _urdu(text="ایک"), _urdu(text="دو", t_end=10.0))
     # one queue: transliteration "ایک" runs at once, its translation waits 0.2 s, both of "دو" 0.4 s+
     assert [prompt for _, prompt in a.llm.calls] == ["ایک", "ایک"]
     assert [(e["type"], e["text"]) for e in events if e["type"] in ("translation", "transliteration")] == [
@@ -718,17 +700,16 @@ def test_a_segment_retracted_as_echo_gets_no_transliteration(tmp_path, monkeypat
     a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1))
     mic = _urdu(source="User", text="آپ کیسے ہیں میرے دوست", t_end=10.0)
     loopback = _urdu(text="آپ کیسے ہیں میرے دوست", t_end=10.3)
-    _speak(a, mic, loopback, settle=0.4)
+    _speak(a, mic, loopback)
     assert {"type": "retract", "id": mic.id} in events
     assert [e["id"] for e in events if e["type"] == "transliteration"] == [loopback.id]
 
 
 def test_a_failed_transliteration_emits_one_error_and_no_event(tmp_path, monkeypatch):
     a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(error=RuntimeError("quota")))
-    s = _urdu()
-    _speak(a, s)
-    assert [e for e in events if e["type"] == "error"] == [{"type": "error", "text": "Transliteration: quota"}]
+    _speak(a, _urdu())
     assert [e["type"] for e in events] == ["segment", "error"]
+    assert events[1] == {"type": "error", "text": "Transliteration: quota"}
 
 
 def test_a_reloaded_window_replays_transliterations():

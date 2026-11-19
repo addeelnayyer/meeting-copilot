@@ -28,6 +28,7 @@ class Segment:
     t_end: float
     latency: float = 0.0
     ts: float = field(default_factory=time.time)
+    retracted: bool = False  # pulled back out of the transcript as an echo
     id: int = 0
 
 

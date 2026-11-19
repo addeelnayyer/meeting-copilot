@@ -247,23 +247,25 @@ class Assistant:
 
     async def _transliterate(self, seg):
         result = await self._plain(seg, TRANSLITERATE_SYSTEM.format(lang=seg.lang), "Transliteration")
-        if result and any(s is seg for s in self.transcript.segments):  # not retracted as an echo meanwhile
+        if result:
             self.emit({"type": "transliteration", "id": seg.id, "source": seg.source, **result})
 
     async def _plain(self, seg, system, label):
-        """Plain-text LLM call for one line: {text, engine, ms}, or None when skipped or failed."""
-        queued = time.monotonic()
+        """Plain-text LLM call for one line: {text, engine, ms}, or None when skipped or failed.
+        A line retracted as an echo, or from a meeting that has ended, is skipped."""
+        transcript, queued = self.transcript, time.monotonic()
+        gone = lambda: seg.retracted or self.transcript is not transcript  # noqa: E731
         # One at a time: a local model can't keep up with every line in parallel, and a pile-up
         # made all of them time out. Lines that waited too long are skipped to catch up.
         async with self._one_at_a_time:
-            if time.monotonic() - queued > config.TRANSLATE_MAX_WAIT_S:
+            if gone() or time.monotonic() - queued > config.PLAIN_MAX_WAIT_S:
                 return None
             try:
                 text, engine, secs = await self.llm.generate(system, seg.text)
             except Exception as e:
                 self.emit({"type": "error", "text": f"{label}: {str(e) or type(e).__name__}"})
                 return None
-        return {"text": text.strip(), "engine": engine, "ms": round(secs * 1000)}
+        return None if gone() else {"text": text.strip(), "engine": engine, "ms": round(secs * 1000)}
 
     # --- toggles / helpers ---------------------------------------------------
     def set_mode(self, proactive=None, translate=None):

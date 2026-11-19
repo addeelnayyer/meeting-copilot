@@ -3,8 +3,9 @@
     python -m copilot.llm_bench [model ...]      (default: OLLAMA_MODEL from .env)
 
 Call types: suggestion (English, Urdu script and code-switched lines), translation (every
-participant line) and german (suggestions on a German meeting, for the shipped default).
-Suggestion calls use the role prompt, context layout and schema of a meeting. Each model is
+participant line), transliteration (every Urdu line, pure and code-switched, into Roman Urdu)
+and german (suggestions on a German meeting, for the shipped default). Every call uses the
+prompt of a meeting; suggestion calls also its context layout and schema. Each model is
 warmed up first. Needs a running Ollama with the models pulled, so it is not part of CI.
 """
 
@@ -23,6 +24,7 @@ from . import config
 from .assistant import (
     PROACTIVE_INSTRUCTION,
     TRANSLATE_SYSTEM,
+    TRANSLITERATE_SYSTEM,
     meeting_context,
     suggestion_system,
     translation_target,
@@ -36,7 +38,8 @@ from .segment import Segment
 from .transcript import Transcript
 
 DATA = Path(__file__).with_name("llm_bench.json")
-CALL_TYPES = ("suggestion", "translation", "german")
+CALL_TYPES = ("suggestion", "translation", "transliteration", "german")
+TRANSLITERATED = ("ur",)  # languages whose lines get a transliteration call, as with TRANSLITERATE=ur
 JSON_CALLS = ("suggestion", "german")
 SAMPLES = 5
 WARMUP_TRIES = 5
@@ -91,9 +94,11 @@ def workload():
         for i, line in enumerate(meeting["lines"]):
             # 5 s apart, so every line is its own turn as in a real transcript
             transcript.add(Segment(line["source"], line["text"], line["lang"], duration=3.0, t_end=5.0 * (i + 1)))
+            label = f"[{line['lang']}] {line['text']}"
+            if line["lang"] in TRANSLITERATED:  # either source, as in a meeting
+                calls.append(Call("transliteration", label, TRANSLITERATE_SYSTEM.format(lang=line["lang"]), line["text"]))
             if line["source"] != PARTICIPANT:
                 continue
-            label = f"[{line['lang']}] {line['text']}"
             prompt = meeting_context(facts, memory, meeting["knowledge"], transcript) + PROACTIVE_INSTRUCTION
             calls.append(Call(meeting["call"], label, system, prompt))
             target = translation_target(line["lang"])
@@ -142,7 +147,7 @@ async def run_model(provider, model, calls):
         secs = time.perf_counter() - t
         valid, sample = _output(call, text)
         results[call.kind].append(Result(call.label, secs, valid, sample))
-        print(f"  {call.kind:<11} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
+        print(f"  {call.kind:<15} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
     return results
 
 
@@ -155,7 +160,7 @@ def report(results):
     """results: {model: {call type: [Result]}} -> summary table, then the samples of all models side by side."""
     models = list(results)
     print("\n" + "=" * 78)
-    print(f"{'model':<28} {'call type':<12} {'n':>3} {'p50 ms':>7} {'p95 ms':>7}  {'valid JSON':>10}  errors")
+    print(f"{'model':<28} {'call type':<16} {'n':>3} {'p50 ms':>7} {'p95 ms':>7}  {'valid JSON':>10}  errors")
     for model in models:
         for kind in CALL_TYPES:
             rows = results[model][kind]
@@ -163,7 +168,7 @@ def report(results):
             p50, p95 = (f"{np.percentile(lat, q) * 1000:.0f}" for q in (50, 95)) if lat else ("-", "-")
             valid = f"{sum(r.valid for r in rows)}/{len(rows)}" if kind in JSON_CALLS else ""
             errors = sum(r.secs is None for r in rows)
-            print(f"{model:<28} {kind:<12} {len(rows):>3} {p50:>7} {p95:>7}  {valid:>10}  {errors or ''}")
+            print(f"{model:<28} {kind:<16} {len(rows):>3} {p50:>7} {p95:>7}  {valid:>10}  {errors or ''}")
     for kind in CALL_TYPES:
         rows = results[models[0]][kind]
         for n, i in enumerate(_picks(len(rows)), 1):

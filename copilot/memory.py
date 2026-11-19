@@ -8,13 +8,30 @@ from . import config
 
 MEMORY_SYSTEM = """You maintain the running memory of a live meeting for an AI meeting advisor.
 You get the current memory and the new transcript lines since the last update.
-Return the updated memory in German as short bullet points, grouped under these headings:
-## Verlauf (what was discussed, in order)
-## Entscheidungen & Zusagen
-## Offene Punkte & Einwände
-## Stimmung & Prioritäten der Teilnehmer
+Return the updated memory {language} as short bullet points, grouped under these headings:
+{headings}
 Keep concrete numbers, names, dates and commitments. Drop small talk. Max ~250 words.
 Output only the memory, no preamble."""
+
+GERMAN_HEADINGS = """## Verlauf (what was discussed, in order)
+## Entscheidungen & Zusagen
+## Offene Punkte & Einwände
+## Stimmung & Prioritäten der Teilnehmer"""
+
+# Written in the reply language: the model translates them for languages other than English.
+HEADINGS = """## Discussion (what was discussed, in order)
+## Decisions & commitments
+## Open points & objections
+## Mood & priorities of the participants"""
+
+
+def system_prompt(lang):
+    """The memory follows REPLY_LANGUAGE (an ISO 639-1 code), else German."""
+    if not lang:
+        return MEMORY_SYSTEM.format(language="in German", headings=GERMAN_HEADINGS)
+    return MEMORY_SYSTEM.format(
+        language=f"in the language with the ISO 639-1 code '{lang}'",
+        headings=f"{HEADINGS}\n(Write the headings in that language as well.)")
 
 
 class Memory:
@@ -53,7 +70,7 @@ async def summarize(assistant):
     if sum(len(s.text.split()) for s in new) < config.MEMORY_MIN_WORDS:
         return
     try:
-        text, engine, secs = await assistant.llm.generate(MEMORY_SYSTEM, memory.prompt(new))
+        text, engine, secs = await assistant.llm.generate(system_prompt(config.REPLY_LANGUAGE), memory.prompt(new))
     except Exception as e:
         assistant.emit({"type": "error", "text": f"Memory: {e}"})
         return

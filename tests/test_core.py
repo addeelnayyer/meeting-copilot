@@ -265,6 +265,53 @@ def test_memory_summarizes_only_new_segments(tmp_path):
     assert a.events[-1]["type"] == "memory"
 
 
+def _summarize_with_fake_llm(tmp_path, reply):
+    from copilot import memory
+    from copilot.memory import Memory
+
+    calls = []
+
+    class FakeLLM:
+        async def generate(self, system, prompt):
+            calls.append(system)
+            return reply, "gemini", 0.5
+
+    class FakeAssistant:
+        transcript = Transcript()
+        memory = Memory(tmp_path / "s.memory.md")
+        llm = FakeLLM()
+        events = []
+        emit = events.append
+
+    a = FakeAssistant()
+    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
+    asyncio.run(memory.summarize(a))
+    return calls[0], a
+
+
+def test_memory_follows_reply_language(tmp_path, monkeypatch):
+    from copilot import export
+
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
+    reply = "## Discussion\n- Website by the end of March"
+    system, a = _summarize_with_fake_llm(tmp_path, reply)
+    assert "'en'" in system and "German" not in system
+    assert "## Discussion" in system and "## Decisions & commitments" in system and "## Verlauf" not in system
+    # the panel and the meeting record show the memory as written
+    assert a.events[-1] == {"type": "memory", "text": reply, "engine": "gemini", "ms": 500}
+    record = export.render(a.transcript.segments, a.memory, Facts(tmp_path / "facts.json"), [], 0.0, 60.0)
+    assert reply in record
+
+
+def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
+    system, _ = _summarize_with_fake_llm(tmp_path, "- Zusammenfassung")
+    assert "in German" in system
+    for heading in ("## Verlauf", "## Entscheidungen & Zusagen", "## Offene Punkte & Einwände",
+                    "## Stimmung & Prioritäten der Teilnehmer"):
+        assert heading in system
+
+
 def test_kb_sources_include_extra_files_and_folders(tmp_path, monkeypatch):
     from copilot import rag
 

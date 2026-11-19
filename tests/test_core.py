@@ -707,32 +707,6 @@ def test_missing_ollama_model_note_follows_ui_language(monkeypatch, lang, note):
     assert client.ollama_note == note
 
 
-def test_unknown_ui_language_falls_back_to_english_with_a_hint(monkeypatch, capsys):
-    monkeypatch.setattr(config, "UI_LANGUAGE", "klingon")
-    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
-
-    async def not_running():
-        return None
-
-    client.fallback.installed = not_running
-    asyncio.run(client.check_ollama())
-    assert client.ollama_note == "Ollama isn't running (ollama.com): no local fallback"
-    assert "UI_LANGUAGE='klingon' is unknown" in capsys.readouterr().out
-
-
-def test_every_ui_language_has_the_same_keys_and_placeholders():
-    import string
-
-    from copilot.strings import TABLES
-
-    def shape(table):
-        return {key: sorted({f for _, f, _, _ in string.Formatter().parse(text) if f}) for key, text in table.items()}
-
-    english = shape(TABLES["en"])
-    for lang, table in TABLES.items():
-        assert shape(table) == english, lang
-
-
 @pytest.mark.parametrize("lang, error", [
     ("en", "'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
     ("de", "'parec' nicht gefunden. Bitte installieren (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),

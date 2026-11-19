@@ -135,10 +135,12 @@ if not SYSTEM_PROMPT_FILE.is_file():  # cmd.exe sets PROMPT=$P$G for its own pro
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 # --- Server / UI ---
+# Language of the window's own text (copilot/strings.py), the presets and the server's status notes:
+# en | de; unknown = en with a hint.
+UI_LANGUAGE = _env("UI_LANGUAGE", "de")
 HOST = "127.0.0.1"
 PORT = int(_env("PORT", "8765"))
 WINDOW_SIZE = (520, 900)
-UI_LANGUAGE = _env("UI_LANGUAGE", "de")  # en | de (unknown -> en): presets, status and error notes
 
 # --- Hotkeys ---
 # Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label

@@ -9,7 +9,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
-from . import config, export
+from . import config, export, strings
 from .audio import PARTICIPANT
 from .memory import Memory, summarize
 from .strings import t, ui_text
@@ -280,7 +280,7 @@ class Assistant:
     def presets():
         """The preset buttons in the UI language (English when the language has no presets)."""
         def localized(texts):
-            return texts.get(config.UI_LANGUAGE) or texts["en"]
+            return texts.get(strings.language()) or texts["en"]
         return [{"hotkey": p["hotkey"], "label": localized(p["label"]), "query": localized(p["query"])}
                 for p in config.PRESETS]
 

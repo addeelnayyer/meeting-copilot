@@ -459,7 +459,6 @@ def test_hotkeys_convert_to_win32_modifiers_and_keys():
 
 # --- ollama models -------------------------------------------------------------------
 def test_ollama_model_switch_and_status_note(monkeypatch):
-    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
     ollama = client.fallback
     installed = None

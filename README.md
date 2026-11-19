@@ -187,7 +187,7 @@ This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not 
 | `Ctrl+Alt+O` | Keep the window on top, or not |
 
 The preset texts above are those of `UI_LANGUAGE=en`, the default; `UI_LANGUAGE=de` shows the German
-buttons and sends the German questions ("Was soll ich jetzt antworten?" ...), with the same hotkeys. Presets are defined once in `PRESETS` in `copilot/config.py`:
+buttons and sends the German questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
 one hotkey each, and a label and question per UI language.
 
 ## How it works

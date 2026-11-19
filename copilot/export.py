@@ -49,7 +49,7 @@ def render(segments, memory, facts, cards, started, ended):
         "\n".join(_card(c) for c in cards) or t("record.none"),
         "",
         f"## {t('record.transcript')}",
-        "\n\n".join(f"**{t('who.user') if source == USER else t('who.participant')}:** {text}"
+        "\n\n".join(f"**{t('who.user' if source == USER else 'who.participant')}:** {text}"
                     for source, text in _turns(segments)),
         "",
     ])

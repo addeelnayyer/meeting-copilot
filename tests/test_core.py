@@ -693,3 +693,48 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
+
+
+# --- presets per UI language ---------------------------------------------------------
+@pytest.mark.parametrize("lang, labels, first_query", [
+    ("en", ["What should I answer?", "Weak points", "Summary"], "What should I answer now?"),
+    ("de", ["Was antworten?", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
+])
+def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_query, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    a, _ = _meeting_assistant(tmp_path, monkeypatch, None)
+    presets = a.presets()
+    assert [p["label"] for p in presets] == labels
+    assert presets[0]["query"] == first_query
+    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3"]
+
+
+@pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),
+                                            ("de", "Was soll ich jetzt antworten?")])
+def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp_path, monkeypatch):
+    from copilot import hotkeys
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
+    prompts = []
+
+    class FakeLLM:
+        async def generate_json(self, system, prompt):
+            prompts.append(prompt)
+            return {"trigger": "Answer", "suggestions": [{"text": "Yes."}], "new_facts": []}, "ollama", 0.1
+
+    a.llm = FakeLLM()
+    a.kb = SimpleNamespace(context=lambda q: "")
+    bound = {}
+    monkeypatch.setattr(hotkeys, "_bind", bound.update)
+
+    async def press():
+        hotkeys.register(asyncio.get_running_loop(), a, events.append, SimpleNamespace(supported=False))
+        bound["ctrl+alt+1"]()  # on the hotkey thread in the app
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+
+    asyncio.run(press())
+    assert prompts[0].endswith(f"[USER QUESTION]\n{question}")
+    [card] = [e for e in events if e["type"] == "answer"]
+    assert card["query"] == question

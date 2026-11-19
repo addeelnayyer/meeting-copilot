@@ -18,8 +18,8 @@ GERMAN_HEADINGS = """## Verlauf (what was discussed, in order)
 ## Offene Punkte & Einwände
 ## Stimmung & Prioritäten der Teilnehmer"""
 
-# Written in the reply language: the model translates them for languages other than English.
-HEADINGS = """## Discussion (what was discussed, in order)
+# The model translates them into the reply language when it is not English.
+ENGLISH_HEADINGS = """## Discussion (what was discussed, in order)
 ## Decisions & commitments
 ## Open points & objections
 ## Mood & priorities of the participants"""
@@ -31,7 +31,7 @@ def system_prompt(lang):
         return MEMORY_SYSTEM.format(language="in German", headings=GERMAN_HEADINGS)
     return MEMORY_SYSTEM.format(
         language=f"in the language with the ISO 639-1 code '{lang}'",
-        headings=f"{HEADINGS}\n(Write the headings in that language as well.)")
+        headings=f"{ENGLISH_HEADINGS}\n(Write the headings in that language as well.)")
 
 
 class Memory:

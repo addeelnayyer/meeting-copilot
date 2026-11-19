@@ -81,7 +81,7 @@ def create_app(hub, assistant, window):
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         await ws.accept()
-        await ws.send_json(assistant.presets())
+        await ws.send_json({"type": "presets", "presets": assistant.presets()})
         await ws.send_json({"type": "ui", "read_s": config.SUGGESTION_READ_S, "single": config.SINGLE_SUGGESTION})
         for event in hub.state.values():
             await ws.send_json(event)

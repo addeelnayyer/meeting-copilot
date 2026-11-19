@@ -95,7 +95,7 @@ def register(loop, assistant, emit, win):
         focus_window()
         loop.call_soon_threadsafe(emit, {"type": "focus_query"})
 
-    bindings = {preset["hotkey"]: ask(preset["query"]) for preset in assistant.presets()["presets"]}
+    bindings = {preset["hotkey"]: ask(preset["query"]) for preset in assistant.presets()}
     bindings[config.HOTKEY_FOCUS] = focus
     bindings[config.HOTKEY_TRANSLATE] = on_loop(lambda: assistant.set_mode(translate=not assistant.translate))
     bindings[config.HOTKEY_PROACTIVE] = on_loop(lambda: assistant.set_mode(proactive=not assistant.proactive))

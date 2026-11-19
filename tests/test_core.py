@@ -630,14 +630,13 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
     ("en", ["What should I answer?", "Weak points", "Summary"], "What should I answer now?"),
     ("de", ["Was antworten?", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
 ])
-def test_preset_event_carries_the_ui_language_labels_and_questions(lang, labels, first_query, tmp_path, monkeypatch):
+def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_query, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "UI_LANGUAGE", lang)
     a, _ = _meeting_assistant(tmp_path, monkeypatch, None)
-    event = a.presets()
-    assert event["type"] == "presets"
-    assert [p["label"] for p in event["presets"]] == labels
-    assert event["presets"][0]["query"] == first_query
-    assert [p["hotkey"] for p in event["presets"]] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3"]
+    presets = a.presets()
+    assert [p["label"] for p in presets] == labels
+    assert presets[0]["query"] == first_query
+    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3"]
 
 
 @pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),

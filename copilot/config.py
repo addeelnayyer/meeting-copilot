@@ -137,7 +137,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 # --- Server / UI ---
 # Language of the window's own text (copilot/strings.py), the presets and the server's status notes:
 # en | de; unknown = en with a hint.
-UI_LANGUAGE = _env("UI_LANGUAGE", "de")
+UI_LANGUAGE = _env("UI_LANGUAGE", "en")
 HOST = "127.0.0.1"
 PORT = int(_env("PORT", "8765"))
 WINDOW_SIZE = (520, 900)

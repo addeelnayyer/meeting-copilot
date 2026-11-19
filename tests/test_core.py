@@ -239,17 +239,14 @@ def _ollama_recording(reply):
     return p, sent
 
 
-def test_ollama_chat_with_schema_turns_thinking_off():
-    reply = '{"trigger": "ok", "suggestions": [], "new_facts": []}'
+@pytest.mark.parametrize("schema, reply", [
+    (SUGGESTION_SCHEMA, '{"trigger": "ok", "suggestions": [], "new_facts": []}'),
+    (None, "Hallo Welt"),
+])
+def test_ollama_chat_turns_thinking_off(schema, reply):
     p, sent = _ollama_recording(reply)
-    assert asyncio.run(p.complete("s", "p", SUGGESTION_SCHEMA)) == reply
-    assert sent[0]["think"] is False and sent[0]["format"] == SUGGESTION_SCHEMA
-
-
-def test_ollama_chat_without_schema_turns_thinking_off():
-    p, sent = _ollama_recording("Hallo Welt")
-    assert asyncio.run(p.complete("s", "p")) == "Hallo Welt"
-    assert sent[0]["think"] is False and "format" not in sent[0]
+    assert asyncio.run(p.complete("s", "p", schema)) == reply
+    assert sent[0]["think"] is False and sent[0].get("format") == schema
 
 
 def test_ollama_warmup_turns_thinking_off():

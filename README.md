@@ -213,6 +213,7 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
 uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine faster-whisper|whisperkit)
+uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)

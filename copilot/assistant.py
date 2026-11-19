@@ -34,6 +34,25 @@ TRANSLITERATE_SYSTEM = (
     "Output only the rewritten text, no quotes, no comments."
 )
 REPLY_LANGUAGE_RULE = "\n# Language\nWrite every suggestion in the language with the ISO 639-1 code '{lang}'.\n"
+PROACTIVE_INSTRUCTION = "\n\nReagiere auf den letzten [Participant]-Beitrag."
+
+
+def suggestion_system(addendum=""):
+    """The role prompt of suggestions and answers, with the reply-language rule when REPLY_LANGUAGE is set."""
+    rule = REPLY_LANGUAGE_RULE.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
+    return config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8") + addendum + rule
+
+
+def meeting_context(facts, memory, knowledge, transcript):
+    """The context layout every suggestion and answer is built on."""
+    return (f"[FACTS]\n{facts.render()}\n\n[MEMORY]\n{memory.render()}\n\n"
+            f"[KNOWLEDGE]\n{knowledge}\n\n[TRANSCRIPT]\n{transcript.render()}")
+
+
+def translation_target(lang):
+    """Lines in another language go into the user's (LANGUAGES[0]), the user's into the second."""
+    mine = config.LANGUAGES[0]
+    return mine if lang != mine else (config.LANGUAGES[1:] or ["en"])[0]
 
 
 class Assistant:
@@ -44,8 +63,8 @@ class Assistant:
         self.kb = kb
         self.llm = llm
         self.emit = emit  # callable(dict), must be called on the loop
-        self.system = config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8")
-        self.language_rule = REPLY_LANGUAGE_RULE.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
+        self.system = suggestion_system()
+        self.ask_system = suggestion_system(ASK_ADDENDUM)
         self.proactive = True
         self.translate = False
         self._one_at_a_time = asyncio.Lock()  # translations and transliterations, one at a time
@@ -186,16 +205,15 @@ class Assistant:
 
     async def _context(self, rag_query):
         knowledge = await asyncio.to_thread(self.kb.context, rag_query)
-        return (f"[FACTS]\n{self.facts.render()}\n\n[MEMORY]\n{self.memory.render()}\n\n"
-                f"[KNOWLEDGE]\n{knowledge}\n\n[TRANSCRIPT]\n{self.transcript.render()}")
+        return meeting_context(self.facts, self.memory, knowledge, self.transcript)
 
     async def _run_proactive(self):
         latest = self._last_participant_text()
         if not latest:
             return
-        prompt = await self._context(latest) + "\n\nReagiere auf den letzten [Participant]-Beitrag."
+        prompt = await self._context(latest) + PROACTIVE_INSTRUCTION
         try:
-            result, engine, secs = await self.llm.generate_json(self.system + self.language_rule, prompt)
+            result, engine, secs = await self.llm.generate_json(self.system, prompt)
         except Exception as e:  # a timeout's message is empty
             self.emit({"type": "error", "text": f"LLM: {ui_text(e)}"})
             return
@@ -223,7 +241,7 @@ class Assistant:
         prompt = (await self._context(f"{query} {self._last_participant_text()}")
                   + f"\n\n[USER QUESTION]\n{query}")
         try:
-            result, engine, secs = await self.llm.generate_json(self.system + ASK_ADDENDUM + self.language_rule,
+            result, engine, secs = await self.llm.generate_json(self.ask_system,
                                                                 prompt)
         except Exception as e:
             self.emit({"type": "error", "text": f"LLM: {ui_text(e)}"})
@@ -239,8 +257,7 @@ class Assistant:
 
     # --- translation / transliteration ------------------------------------------
     async def _translate(self, seg):
-        mine = config.LANGUAGES[0]
-        target = mine if seg.lang != mine else (config.LANGUAGES[1:] or ["en"])[0]
+        target = translation_target(seg.lang)
         result = await self._plain(seg, TRANSLATE_SYSTEM.format(target=target), "Translation")
         if result:
             self.emit({"type": "translation", "id": seg.id, "source": seg.source, "target": target.upper(),

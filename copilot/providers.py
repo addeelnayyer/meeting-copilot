@@ -220,6 +220,15 @@ class OllamaProvider(Provider):
         except httpx.HTTPError as e:
             print(f"Ollama warmup failed: {e}")
 
+    async def version(self):
+        """The Ollama server version, e.g. "0.33.2"; None if Ollama is not running."""
+        try:
+            r = await self._http.get(f"{config.OLLAMA_URL}/api/version", timeout=3)
+            r.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        return r.json().get("version")
+
     async def installed(self):
         """Names of the installed chat models (embedding models skipped); None if Ollama is not running."""
         try:

@@ -16,6 +16,7 @@ import numpy as np
 
 from . import config
 from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
+from .strings import t
 
 HOST = "127.0.0.1"
 
@@ -153,13 +154,14 @@ class WhisperKitEngine:
 
     name = "whisperkit"
 
-    def __init__(self, launch=None):
+    def __init__(self, launch=None, on_status=None):
         if launch is None:
             model = model_path()
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
             launch = functools.partial(Server, model)
         self._launch = launch
         self._restarted = False
+        self.on_status = on_status or (lambda status: None)  # the restart, shown in the UI
         self._start()
         self._language = StickyLanguage()
 
@@ -215,11 +217,13 @@ class WhisperKitEngine:
             raise EngineFailed(f"whisperkit-cli failed again: {reason}") from error
         self._restarted = True
         print(f"STT: whisperkit-cli failed ({reason}), restarting it")
+        self.on_status({"ready": False, "engine": self.name, "note": t("stt.restarting", engine=self.name, reason=reason)})
         self.close()
         try:
             self._start()
         except Exception as e:
             raise EngineFailed(f"whisperkit-cli restart failed: {e}") from e
+        self.on_status({"ready": True, "engine": self.name, "note": ""})
 
     def _request(self, wav, lang):
         # No prompt: WhisperKit pre-fills it through the decoder, which doubled latency and,

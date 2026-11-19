@@ -325,7 +325,8 @@ def worker(monkeypatch):
         return fallbacks[-1]
 
     monkeypatch.setattr(stt, "chosen_stt_engine", lambda setting: (setting, None))  # no Mac needed
-    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda: whisperkit.WhisperKitEngine(launch=launcher),
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda on_status: whisperkit.WhisperKitEngine(launch=launcher,
+                                                                                         on_status=on_status),
                                          "faster-whisper": fallback})
     chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()
 
@@ -360,7 +361,14 @@ def test_one_crash_is_recovered_by_one_restart(worker):
     assert worker.fallbacks == []
 
 
-def test_second_failure_switches_to_faster_whisper_with_a_note(worker):
+@pytest.mark.parametrize("lang, restarting_note, switched_note", [
+    ("en", "whisperkit failed ({reason}), restarting it", "whisperkit failed ({error}), STT now on faster-whisper"),
+    ("de", "whisperkit ausgefallen ({reason}), wird neu gestartet",
+     "whisperkit ausgefallen ({error}), STT jetzt mit faster-whisper"),
+])
+def test_second_failure_switches_to_faster_whisper_with_a_note(worker, monkeypatch, lang, restarting_note,
+                                                               switched_note):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
     assert worker.transcribe() == "Hello there."
     worker.launcher.servers[-1].kill()
     assert worker.transcribe() == "Hello there."  # restarted
@@ -371,13 +379,15 @@ def test_second_failure_switches_to_faster_whisper_with_a_note(worker):
     assert len(worker.launcher.servers) == 2  # no second restart
     assert all(s.closed for s in worker.launcher.servers)
     assert len(worker.fallbacks) == 1
-    first, switching, switched = worker.statuses
+    first, restarting, restarted, switching, switched = worker.statuses
+    reason = "whisperkit-cli exited with code -9"  # why, in both notes
     assert first == {"ready": True, "engine": "whisperkit"}
+    assert restarting == {"ready": False, "engine": "whisperkit", "note": restarting_note.format(reason=reason)}
+    assert restarted == {"ready": True, "engine": "whisperkit", "note": ""}
     assert not switching["ready"] and switched["ready"]  # "STT loading" while faster-whisper loads
     assert switching["note"] == switched["note"]
     assert switched["engine"] == "faster-whisper"
-    assert "whisperkit" in switched["note"] and "faster-whisper" in switched["note"]
-    assert "exited with code -9" in switched["note"]  # why
+    assert switched["note"] == switched_note.format(error=f"whisperkit-cli failed again: {reason}")
 
 
 def test_failed_restart_switches_to_faster_whisper(worker):

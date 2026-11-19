@@ -423,7 +423,7 @@ class FakeEngine:
 def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
     built = []
 
-    def kit():
+    def kit(on_status):
         built.append(FakeEngine(fail))  # only reached when the start succeeds
         return built[-1]
 
@@ -688,6 +688,65 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
+
+
+# --- UI language ---------------------------------------------------------------------
+@pytest.mark.parametrize("lang, note", [
+    ("en", "Ollama model ollama-model is missing: ollama pull ollama-model, or pick an installed one above"),
+    ("de", "Ollama-Modell ollama-model fehlt: ollama pull ollama-model, oder oben ein installiertes wählen"),
+])
+def test_missing_ollama_model_note_follows_ui_language(monkeypatch, lang, note):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
+
+    async def fake_installed():
+        return ["llama3.2:3b"]
+
+    client.fallback.installed = fake_installed
+    asyncio.run(client.check_ollama())
+    assert client.ollama_note == note
+
+
+@pytest.mark.parametrize("lang, error", [
+    ("en", "'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
+    ("de", "'parec' nicht gefunden. Bitte installieren (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
+])
+def test_audio_device_error_follows_ui_language_and_console_stays_english(tmp_path, monkeypatch, capsys,
+                                                                           lang, error):
+    from copilot import audio
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    monkeypatch.setattr(audio.sys, "platform", "linux")
+    monkeypatch.setattr(audio.shutil, "which", lambda name: None)
+    a, events = _meeting_assistant(tmp_path, monkeypatch, audio.Capture)
+    a.start_meeting()
+    assert events[-1] == {"type": "meeting", "active": False, "mic": True, "error": error}
+    assert "Audio:    'parec' not found. Install it" in capsys.readouterr().out
+
+
+def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkeypatch):
+    class FakeLLM:
+        async def generate_json(self, system, prompt):
+            return None, "ollama", 0.1
+
+    class NoKnowledge:
+        def context(self, query):
+            return ""
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
+    a.llm, a.kb = FakeLLM(), NoKnowledge()
+    asyncio.run(a.ask("What now?"))
+    assert events[-1] == {"type": "error", "text": "The answer wasn't valid JSON."}
+
+
+@pytest.mark.parametrize("lang, label", [("en", "Ollama (local)"), ("de", "Ollama (lokal)")])
+def test_ollama_label_follows_ui_language(monkeypatch, lang, label):
+    from copilot.providers import OllamaProvider
+
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    client = LLM([FakeProvider("claude"), OllamaProvider()])
+    assert {p["id"]: p["label"] for p in client.describe()["list"]}["ollama"] == label
 
 
 # --- presets per UI language ---------------------------------------------------------

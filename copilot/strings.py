@@ -2,6 +2,8 @@
 
 The page holds only ids; `event()` is the event that sends it the table on connect.
 Placeholders are written as {name} and filled by `t()` (server) or the page's own `t()`.
+Server notes use `t()` too; an error shown in the window is raised as `UiError`, whose str() stays
+English for the console. Console log lines meant for developers do not use these tables.
 """
 
 from . import config
@@ -52,6 +54,25 @@ TABLES = {
         "ask.button": "Ask",
         "key.ctrl": "Ctrl",
         "key.space": "Space",
+        # Server notes
+        "llm.no_key": "{provider}: no API key/URL",
+        "llm.quota": "{provider}: rate limit/quota reached, back in {minutes} min",
+        "llm.errors": "{provider} errors, paused for {seconds} s",
+        "llm.not_json": "The answer wasn't valid JSON.",
+        "ollama.label": "Ollama (local)",
+        "ollama.not_running": "Ollama isn't running (ollama.com): no local fallback",
+        "ollama.model_missing": "Ollama model {model} is missing: ollama pull {model}, or pick an installed one above",
+        "ollama.no_model": "No Ollama model installed: ollama pull {model}",
+        "stt.restarting": "{engine} failed ({reason}), restarting it",
+        "stt.switched": "{failed} failed ({error}), STT now on {fallback}",
+        "stt.fallback_failed": "{failed} failed, {fallback} too: {error}",
+        "audio.no_wasapi_mic": "No WASAPI microphone matching '{name}'",
+        "audio.no_loopback": "No loopback device matching '{name}'",
+        "audio.no_pulse_source": "No PulseAudio/PipeWire source matching '{name}'",
+        "audio.no_input": "No input device matching '{name}'",
+        "audio.no_mac_loopback": "{error}. macOS has no built-in loopback: install BlackHole and route "
+                                 "the meeting audio to it (see README), or set LOOPBACK_DEVICE.",
+        "audio.no_parec": "'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse).",
     },
     "de": {
         "meeting.start": "Meeting starten",
@@ -98,6 +119,26 @@ TABLES = {
         "ask.button": "Fragen",
         "key.ctrl": "Strg",
         "key.space": "Leertaste",
+        # Server notes
+        "llm.no_key": "{provider}: kein API-Key/URL",
+        "llm.quota": "{provider}: Limit/Kontingent erreicht, wieder in {minutes} min",
+        "llm.errors": "{provider}-Fehler, Pause {seconds} s",
+        "llm.not_json": "Antwort war kein gültiges JSON.",
+        "ollama.label": "Ollama (lokal)",
+        "ollama.not_running": "Ollama läuft nicht (ollama.com): kein lokaler Fallback",
+        "ollama.model_missing": "Ollama-Modell {model} fehlt: ollama pull {model}, oder oben ein installiertes wählen",
+        "ollama.no_model": "Kein Ollama-Modell installiert: ollama pull {model}",
+        "stt.restarting": "{engine} ausgefallen ({reason}), wird neu gestartet",
+        "stt.switched": "{failed} ausgefallen ({error}), STT jetzt mit {fallback}",
+        "stt.fallback_failed": "{failed} ausgefallen, {fallback} auch: {error}",
+        "audio.no_wasapi_mic": "Kein WASAPI-Mikrofon passend zu '{name}'",
+        "audio.no_loopback": "Kein Loopback-Gerät passend zu '{name}'",
+        "audio.no_pulse_source": "Keine PulseAudio/PipeWire-Quelle passend zu '{name}'",
+        "audio.no_input": "Kein Eingabegerät passend zu '{name}'",
+        "audio.no_mac_loopback": "{error}. macOS hat kein eingebautes Loopback: BlackHole installieren und den "
+                                 "Meeting-Ton dorthin leiten (siehe README), oder LOOPBACK_DEVICE setzen.",
+        "audio.no_parec": "'parec' nicht gefunden. Bitte installieren (Debian/Ubuntu/Fedora: pulseaudio-utils, "
+                          "Arch: libpulse).",
     },
 }
 
@@ -116,7 +157,33 @@ def language():
 
 
 def t(key, **values):
-    return TABLES[language()][key].format(**values)
+    """The text for `key` in the UI language, with the placeholders filled."""
+    return _render(language(), key, values)
+
+
+def _render(lang, key, values):
+    values = {k: _error_text(v, lang) if isinstance(v, BaseException) else v for k, v in values.items()}
+    return TABLES[lang][key].format(**values)
+
+
+def _error_text(error, lang):
+    return error.render(lang) if isinstance(error, UiError) else str(error) or type(error).__name__
+
+
+class UiError(RuntimeError):
+    """An error shown in the window: str() is English for the console, ui_text() follows UI_LANGUAGE."""
+
+    def __init__(self, key, **values):
+        self.key, self.values = key, values
+        super().__init__(self.render("en"))
+
+    def render(self, lang):
+        return _render(lang, self.key, self.values)
+
+
+def ui_text(error):
+    """How `error` reads in the window: translated for a UiError, else its own message."""
+    return _error_text(error, language())
 
 
 def hotkey(combo):

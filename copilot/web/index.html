@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,7 +14,8 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font: 15px/1.4 "Segoe UI", system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; }
+  body { display: flex; flex-direction: column; visibility: hidden; }
+  body.ready { visibility: visible; }  /* shown once the strings arrived: no flash of ids */
   header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line);
     background: var(--panel); font-size: 12px; color: var(--dim); flex-wrap: wrap; }
   .badge { padding: 2px 8px; border-radius: 4px; background: var(--line); color: var(--text); font-weight: 600; }
@@ -58,7 +59,7 @@
   .card { cursor: pointer; }
   .card.old { opacity: .7; }
   .card.pinned { opacity: 1; outline: 1px solid var(--confident); }
-  .card.pinned .meta::after { content: "angeheftet"; margin-left: auto; color: var(--confident); }
+  .card.pinned .meta::after { content: var(--pinned); margin-left: auto; color: var(--confident); }
   body.single .card:not(.old) .sugg { font-size: 27px; }
   #pending { display: none; margin: 8px 12px 0; padding: 6px 10px; border: 1px solid var(--confident);
     border-radius: 4px; background: #0f2a3a; color: var(--text); font: 600 13px "Segoe UI", sans-serif;
@@ -104,59 +105,59 @@
 </head>
 <body>
 <header>
-  <select id="provider" title="KI-Anbieter (Fallback immer: Ollama lokal)"></select>
-  <span id="engine" class="badge" title="Hat zuletzt geantwortet">-</span>
+  <select id="provider" data-t-title="provider.title"></select>
+  <span id="engine" class="badge" data-t-title="engine.title">-</span>
   <span id="lat"></span>
   <span id="cnote" style="color:var(--warn)"></span>
-  <span id="stt" class="badge off">STT lädt</span>
+  <span id="stt" class="badge off" data-t="stt.loading"></span>
   <span id="snote" style="color:var(--warn)"></span>
-  <span class="meter" title="Du (Mikrofon)">
+  <span class="meter" data-t-title="meter.user">
     <svg viewBox="0 0 24 24" fill="none" stroke="var(--user)" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
     <span class="bar"><i id="lv-User" style="background:var(--user)"></i></span>
   </span>
-  <span class="meter" title="Teilnehmer (Loopback)">
+  <span class="meter" data-t-title="meter.participant">
     <svg viewBox="0 0 24 24" fill="none" stroke="var(--part)" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>
     <span class="bar"><i id="lv-Participant" style="background:var(--part)"></i></span>
   </span>
   <span class="spacer"></span>
-  <button id="tg-proactive" class="tog" title="Strg+Alt+P">Proaktiv</button>
-  <button id="tg-translate" class="tog" title="Strg+Alt+T">Übersetzen</button>
+  <button id="tg-proactive" class="tog" data-t="proactive.label" data-t-title="proactive.title"></button>
+  <button id="tg-translate" class="tog" data-t="translate.label" data-t-title="translate.title"></button>
   <span id="win">
-    <button id="pin" class="tog icon" title="Immer im Vordergrund (Strg+Alt+O)">
+    <button id="pin" class="tog icon" data-t-title="on_top.title">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3z"/><path d="M12 15v6"/></svg>
     </button>
-    <input id="opacity" type="range" min="40" max="100" step="5" title="Deckkraft">
+    <input id="opacity" type="range" min="40" max="100" step="5" data-t-title="opacity.title">
   </span>
-  <button id="open-meetings" class="tog icon" title="Gespeicherte Meetings öffnen">
+  <button id="open-meetings" class="tog icon" data-t-title="open_meetings.title">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/></svg>
   </button>
-  <button id="open-notes" class="tog icon" title="Wissensbasis öffnen (Änderungen gelten sofort)">
+  <button id="open-notes" class="tog icon" data-t-title="open_notes.title">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
   </button>
-  <button id="open-settings" class="tog icon" title="Einstellungen (.env) öffnen (gelten nach Neustart)">
+  <button id="open-settings" class="tog icon" data-t-title="open_settings.title">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
   </button>
 </header>
 
 <div id="bar">
-  <button id="meeting">Meeting starten</button>
-  <button id="mic" class="tog" title="Mikrofon an/aus (Strg+Alt+M). Die Teilnehmer werden weiter gehört.">
+  <button id="meeting"></button>
+  <button id="mic" class="tog" data-t-title="mic.title">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-    <span>Mikro an</span>
+    <span></span>
   </button>
 </div>
 <div id="notice"></div>
 
-<button id="pending" title="Sofort anzeigen"></button>
+<button id="pending" data-t-title="pending.title"></button>
 <div id="cards"></div>
 <div id="err"></div>
 <div id="transcript"></div>
-<details><summary>Fakten</summary><pre id="facts">(noch keine)</pre></details>
-<details><summary>Gedächtnis (alle 5 min)</summary><pre id="memory">(noch keine)</pre></details>
+<details><summary data-t="facts.title"></summary><pre id="facts" data-t="none_yet"></pre></details>
+<details><summary data-t="memory.title"></summary><pre id="memory" data-t="none_yet"></pre></details>
 <div id="presets"></div>
 <form id="ask">
-  <input id="q" placeholder="Frage stellen (Strg+Alt+Leertaste) …" autocomplete="off">
-  <button>Fragen</button>
+  <input id="q" data-t-placeholder="ask.placeholder" autocomplete="off">
+  <button data-t="ask.button"></button>
 </form>
 
 <script>
@@ -172,14 +173,33 @@ const MIC_ICONS = { on: '<path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 
 let readMs = 10000, holdUntil = 0, userSpokeAt = 0, pinned = null, pending = null;
 const names = {};  // provider id -> label, filled by the "providers" event
 const engineName = (id) => names[id] || id;
+// UI text: the "strings" event (always the first) holds the table; the page itself only has ids.
+let S = {};
+const t = (id, vars = {}) => (S[id] ?? id).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
+
+function setStrings(ev) {
+  // Reconnected to a server restarted with another UI_LANGUAGE: start over rather than mix languages.
+  if (document.documentElement.lang && document.documentElement.lang !== ev.lang) { location.reload(); return; }
+  // Static elements get their text once; content set by events (e.g. the facts) is not overwritten.
+  const first = !document.body.classList.contains("ready");
+  S = ev.strings;
+  document.documentElement.lang = ev.lang;
+  document.body.style.setProperty("--pinned", JSON.stringify(t("card.pinned")));
+  for (const el of document.querySelectorAll("[data-t]")) if (first) el.textContent = t(el.dataset.t);
+  for (const el of document.querySelectorAll("[data-t-title]")) el.title = t(el.dataset.tTitle);
+  for (const el of document.querySelectorAll("[data-t-placeholder]")) el.placeholder = t(el.dataset.tPlaceholder);
+  document.body.classList.add("ready");
+  renderMeeting();
+  renderPending();
+}
 
 function card(ev, isAnswer) {
   $("empty")?.remove();
   const el = document.createElement("div");
   el.className = "card" + (isAnswer ? " answer" : "");
-  el.title = "Klicken zum Anheften";
+  el.title = t("card.title");
   el.onclick = () => pin(el);
-  const label = isAnswer ? `Frage: <b>${esc(ev.query)}</b>` : `<b>${esc(ev.trigger)}</b>`;
+  const label = isAnswer ? `${esc(t("card.question"))} <b>${esc(ev.query)}</b>` : `<b>${esc(ev.trigger)}</b>`;
   el.innerHTML = `<div class="meta">${label}<span>${esc(engineName(ev.engine))} ${ev.ms} ms</span></div>` +
     (ev.suggestions || []).map((s) => {
       const tone = String(s.tone || "").toLowerCase().replace(/\s+/g, "-");
@@ -215,7 +235,7 @@ function showPending() {
 function renderPending() {
   const b = $("pending");
   b.style.display = pending ? "block" : "none";
-  if (pending) b.textContent = `Neuer Vorschlag wartet: ${pending.trigger} · anzeigen`;
+  if (pending) b.textContent = t("pending.note", { trigger: pending.trigger });
 }
 
 function pin(el) {
@@ -234,7 +254,7 @@ function segment(ev) {
     lastTurn = document.createElement("div");
     lastTurn.className = "turn " + ev.source;
     lastTurn.dataset.source = ev.source;
-    lastTurn.innerHTML = `<div class="who">${ev.source === "User" ? "Du" : "Teilnehmer"}</div>`;
+    lastTurn.innerHTML = `<div class="who">${esc(t(ev.source === "User" ? "who.user" : "who.participant"))}</div>`;
     box.append(lastTurn);
   }
   const s = document.createElement("span");
@@ -270,27 +290,26 @@ function clearScreen() {
 
 function renderMeeting() {
   const btn = $("meeting");
-  btn.textContent = meeting.active ? "Meeting beenden" : "Meeting starten";
+  btn.textContent = t(meeting.active ? "meeting.stop" : "meeting.start");
   btn.classList.toggle("live", meeting.active);
   const mic = $("mic");
   mic.classList.toggle("muted", !meeting.mic);
   mic.querySelector("svg").innerHTML = MIC_ICONS[meeting.mic ? "on" : "off"];
-  mic.querySelector("span").textContent = meeting.mic ? "Mikro an" : "Mikro aus";
+  mic.querySelector("span").textContent = t(meeting.mic ? "mic.on" : "mic.off");
   const empty = $("empty");
-  if (empty) empty.textContent = meeting.active ? "Warte auf den Gesprächspartner …"
-    : "Klicke auf „Meeting starten“, sobald dein Gespräch beginnt.";
+  if (empty) empty.textContent = t(meeting.active ? "empty.waiting" : "empty.idle");
   renderNotice();
 }
 
 function renderNotice() {
   const items = [];
-  if (meeting.error) items.push(`<div class="n err">Audio: ${esc(meeting.error)}</div>`);
-  if (saved) items.push(`<div class="n info">Meeting gespeichert: ${esc(saved.split(/[\\/]/).pop())}
-    <button class="link" data-open="meetings">Ordner öffnen</button></div>`);
+  const folder = (what) => `<button class="link" data-open="${what}">${esc(t("folder.open"))}</button>`;
+  if (meeting.error) items.push(`<div class="n err">${esc(t("audio.error", { error: meeting.error }))}</div>`);
+  if (saved) items.push(`<div class="n info">${esc(t("saved.note", { name: saved.split(/[\\/]/).pop() }))}
+    ${folder("meetings")}</div>`);
   if (ollamaNote) items.push(`<div class="n warn">${esc(ollamaNote)}</div>`);
-  if (kb && kb.files === 0) items.push(`<div class="n info">Deine Wissensbasis ist noch leer. Lege Markdown-Dateien
-    (.md) in den Ordner, z. B. Produkte, Preise, FAQ oder deinen Lebenslauf. Sie werden sofort durchsucht.
-    <button class="link" data-open="notes">Ordner öffnen</button></div>`);
+  if (kb && kb.files === 0) items.push(`<div class="n info">${esc(t("kb.empty"))}
+    ${folder("notes")}</div>`);
   $("notice").innerHTML = items.join("");
 }
 
@@ -307,7 +326,7 @@ function presets(ev) {
     const b = document.createElement("button");
     b.type = "button";
     b.title = p.query;
-    b.innerHTML = `${esc(p.label)}<kbd>${esc(p.hotkey.replace("ctrl", "Strg").replace(/\+(\w)/g, (m, c) => "+" + c.toUpperCase()))}</kbd>`;
+    b.innerHTML = `${esc(p.label)}<kbd>${esc(p.hotkey.replace("ctrl", t("key.ctrl")).replace(/\+(\w)/g, (m, c) => "+" + c.toUpperCase()))}</kbd>`;
     b.onclick = () => ask(p.query);
     box.append(b);
   }
@@ -328,7 +347,7 @@ function providers(ev) {
       const o = document.createElement("option");
       o.value = m ? `ollama:${m}` : p.id;
       o.disabled = !p.configured;
-      o.textContent = p.configured ? `${p.label} · ${m || p.model}` : `${p.label} (kein Key)`;
+      o.textContent = p.configured ? `${p.label} · ${m || p.model}` : t("provider.no_key", { label: p.label });
       sel.append(o);
       if (m && m === p.model && active === "ollama") active = o.value;
     }
@@ -339,6 +358,7 @@ function providers(ev) {
 }
 
 const handlers = {
+  strings: setStrings,
   providers,
   presets,
   segment,
@@ -348,7 +368,7 @@ const handlers = {
   suggestion,
   ui: (ev) => { readMs = ev.read_s * 1000; document.body.classList.toggle("single", ev.single); },
   answer: (ev) => { busy(false); card(ev, true); },
-  asking: (ev) => { busy(true); $("err").textContent = `Frage läuft: ${ev.query}`; },
+  asking: (ev) => { busy(true); $("err").textContent = t("asking", { query: ev.query }); },
   mode: setMode,
   meeting: (ev) => { meeting = ev; renderMeeting(); },
   reset: clearScreen,
@@ -361,7 +381,7 @@ const handlers = {
   engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
     e.className = "badge " + (ev.engine === "ollama" ? "ollama" : "cloud");
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
-  stt: (ev) => { const e = $("stt"); e.textContent = ev.ready ? "STT bereit" : "STT lädt";
+  stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : "stt.loading");
     e.className = "badge" + (ev.ready ? "" : " off"); e.title = ev.engine || "";
     $("snote").textContent = ev.note || ""; },
   levels: (ev) => { for (const k of ["User", "Participant"])
@@ -375,7 +395,7 @@ const handlers = {
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (m) => { const ev = JSON.parse(m.data); handlers[ev.type]?.(ev); };
-  ws.onclose = () => { $("stt").textContent = "getrennt"; $("stt").className = "badge off"; setTimeout(connect, 1000); };
+  ws.onclose = () => { $("stt").textContent = t("stt.disconnected"); $("stt").className = "badge off"; setTimeout(connect, 1000); };
   ws.onopen = clearScreen;
 }
 

@@ -459,6 +459,7 @@ def test_hotkeys_convert_to_win32_modifiers_and_keys():
 
 # --- ollama models -------------------------------------------------------------------
 def test_ollama_model_switch_and_status_note(monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
     ollama = client.fallback
     installed = None
@@ -467,10 +468,10 @@ def test_ollama_model_switch_and_status_note(monkeypatch):
         return installed
 
     ollama.installed = fake_installed
-    assert asyncio.run(client.check_ollama()) and "läuft nicht" in client.ollama_note
+    assert asyncio.run(client.check_ollama()) and "isn't running" in client.ollama_note
 
     installed = ["llama3.2:3b", "qwen3:4b"]
-    assert asyncio.run(client.check_ollama()) and "ollama-model fehlt" in client.ollama_note
+    assert asyncio.run(client.check_ollama()) and "ollama-model is missing" in client.ollama_note
     assert not asyncio.run(client.check_ollama())  # unchanged: no UI update
 
     client.set_primary("ollama:qwen3:4b")

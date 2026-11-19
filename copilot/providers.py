@@ -195,25 +195,28 @@ class OllamaProvider(Provider):
         self.model = config.OLLAMA_MODEL
         self._http = httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_S)
 
+    def _chat(self, **body):
+        """Every /api/chat request: thinking off (the fallback exists to be fast; models
+        without thinking ignore it) and the model kept loaded."""
+        return self._http.post(f"{config.OLLAMA_URL}/api/chat",
+                               json={"model": self.model, "think": False, "keep_alive": "30m", **body})
+
     async def complete(self, system, prompt, schema=None):
         body = {
-            "model": self.model,
             "stream": False,
-            "keep_alive": "30m",
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "options": {"temperature": 0.3},
         }
         if schema:
             body["format"] = schema
-        r = await self._http.post(f"{config.OLLAMA_URL}/api/chat", json=body)
+        r = await self._chat(**body)
         r.raise_for_status()
         return r.json()["message"]["content"]
 
     async def warmup(self):
         """Load the model into memory so the first fallback isn't a cold start."""
         try:
-            await self._http.post(f"{config.OLLAMA_URL}/api/chat",
-                                  json={"model": self.model, "messages": [], "keep_alive": "30m"})
+            await self._chat(messages=[])
         except httpx.HTTPError as e:
             print(f"Ollama warmup failed: {e}")
 

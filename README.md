@@ -143,8 +143,11 @@ Whisper transcribes about 99 languages. `LANGUAGES` (default `de,en`) lists the 
 LANGUAGES=de,en,tr        # German speaker, meetings in German, English and Turkish
 LANGUAGES=ar,en           # Arabic speaker; English segments are translated into Arabic
 WHISPER_LANGUAGE=fr       # only French: skips detection, a little faster
-REPLY_LANGUAGE=en         # force English suggestions (by default: German, or the interviewer's language)
+REPLY_LANGUAGE=en         # force English suggestions and memory (by default: German, or the interviewer's language)
+TRANSLITERATE=ur          # show Urdu lines in Roman Urdu
 ```
+
+`TRANSLITERATE` (comma-separated, empty by default) lists languages whose lines you would rather read in Latin script. Such a line appears at once in its own script and is replaced in place by its transliteration (for Urdu: Roman Urdu) when the LLM returns it; English words, names and numbers stay as they are. It uses the same LLM and the same one-at-a-time queue as translation, and the two are independent: with both on, a line shows both. The transcript the LLM, facts and memory work with keeps the original script.
 
 The suggestion prompts are written for German client calls and German/English interviews; the window labels are German. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 
@@ -169,16 +172,18 @@ This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not 
 
 | Keys | Action |
 | --- | --- |
-| `Ctrl+Alt+1` | "Was soll ich jetzt antworten?" (also a button) |
-| `Ctrl+Alt+2` | "Zeig die Schwächen in ihrem Angebot bzw. Argument auf." (also a button) |
-| `Ctrl+Alt+3` | "Fasse die letzten Minuten in 2 Sätzen zusammen." (also a button) |
+| `Ctrl+Alt+1` | "What should I answer now?" (button "What should I answer?") |
+| `Ctrl+Alt+2` | "Point out the weak points in their offer or argument." (button "Weak points") |
+| `Ctrl+Alt+3` | "Summarize the last few minutes in 2 sentences." (button "Summary") |
 | `Ctrl+Alt+Space` | Focus the question box to type your own question |
 | `Ctrl+Alt+T` | Toggle live translation |
 | `Ctrl+Alt+P` | Pause/resume proactive suggestions |
 | `Ctrl+Alt+M` | Mute/unmute your microphone (the participants are still heard) |
 | `Ctrl+Alt+O` | Keep the window on top, or not |
 
-Presets (label, question, hotkey) are defined once in `PRESETS` in `copilot/config.py`.
+The preset texts above are those of `UI_LANGUAGE=en`; the default, `UI_LANGUAGE=de`, sends the German
+questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
+one hotkey each, and a label and question per UI language.
 
 ## How it works
 
@@ -197,7 +202,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
 - **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
-- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Gedächtnis" in the window, and saved as `sessions/<timestamp>.memory.md`.
+- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Gedächtnis" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
 - **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting.
 

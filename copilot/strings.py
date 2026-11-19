@@ -54,6 +54,12 @@ TABLES = {
         "ask.button": "Ask",
         "key.ctrl": "Ctrl",
         "key.space": "Space",
+        # Meeting record
+        "record.summary": "Summary",
+        "record.no_summary": "(none, the conversation was too short)",
+        "record.cards": "Suggestions and answers",
+        "record.transcript": "Transcript",
+        "record.none": "(none)",
         # Server notes
         "llm.no_key": "{provider}: no API key/URL",
         "llm.quota": "{provider}: rate limit/quota reached, back in {minutes} min",
@@ -119,6 +125,12 @@ TABLES = {
         "ask.button": "Fragen",
         "key.ctrl": "Strg",
         "key.space": "Leertaste",
+        # Meeting record
+        "record.summary": "Zusammenfassung",
+        "record.no_summary": "(keine, das Gespräch war zu kurz)",
+        "record.cards": "Vorschläge und Antworten",
+        "record.transcript": "Transkript",
+        "record.none": "(keine)",
         # Server notes
         "llm.no_key": "{provider}: kein API-Key/URL",
         "llm.quota": "{provider}: Limit/Kontingent erreicht, wieder in {minutes} min",

@@ -106,14 +106,20 @@ class Assistant:
         return asyncio.ensure_future(self._save(self.transcript, self.memory, self.cards, self.started))
 
     async def _save(self, transcript, memory, cards, started):
-        """Fold the last minutes into the memory, then write the meeting record. A new meeting
-        may already be running, so this works on the old meeting's objects."""
+        """Fold the last minutes into the memory and let the queued transliterations land, then
+        write the meeting record. A new meeting may already be running, so this works on the old
+        meeting's objects."""
         current = lambda: self.transcript is transcript  # noqa: E731
         ended = time.time()
         meeting = SimpleNamespace(transcript=transcript, memory=memory, llm=self.llm,
                                   emit=lambda e: current() and self.emit(e))
+        async def finish():
+            await summarize(meeting)
+            async with self._one_at_a_time:  # first in, first out: queued lines are done now
+                pass
+
         try:
-            await asyncio.wait_for(summarize(meeting), 30)
+            await asyncio.wait_for(finish(), 30)
         except asyncio.TimeoutError:
             pass  # save with the last memory
         path = export.write(transcript, memory, self.facts, cards, started, ended)
@@ -266,6 +272,7 @@ class Assistant:
     async def _transliterate(self, seg):
         result = await self._plain(seg, TRANSLITERATE_SYSTEM.format(lang=seg.lang), "Transliteration")
         if result:
+            self.transcript.transliterate(seg, result["text"])
             self.emit({"type": "transliteration", "id": seg.id, "source": seg.source, **result})
 
     async def _plain(self, seg, system, label):

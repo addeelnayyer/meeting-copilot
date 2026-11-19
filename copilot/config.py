@@ -131,13 +131,23 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 HOST = "127.0.0.1"
 PORT = int(_env("PORT", "8765"))
 WINDOW_SIZE = (520, 900)
+UI_LANGUAGE = _env("UI_LANGUAGE", "de")  # en | de: the language of the preset buttons and questions
 
 # --- Hotkeys ---
-# Shown as buttons above the question box and bound to the hotkeys.
+# Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label
+# and question in each UI language (the question is sent to the LLM and repeated on the answer card).
 PRESETS = [
-    {"hotkey": "ctrl+alt+1", "label": "Was antworten?", "query": "Was soll ich jetzt antworten?"},
-    {"hotkey": "ctrl+alt+2", "label": "Schwächen", "query": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."},
-    {"hotkey": "ctrl+alt+3", "label": "Zusammenfassung", "query": "Fasse die letzten Minuten in 2 Sätzen zusammen."},
+    {"hotkey": "ctrl+alt+1",
+     "label": {"en": "What should I answer?", "de": "Was antworten?"},
+     "query": {"en": "What should I answer now?", "de": "Was soll ich jetzt antworten?"}},
+    {"hotkey": "ctrl+alt+2",
+     "label": {"en": "Weak points", "de": "Schwächen"},
+     "query": {"en": "Point out the weak points in their offer or argument.",
+               "de": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."}},
+    {"hotkey": "ctrl+alt+3",
+     "label": {"en": "Summary", "de": "Zusammenfassung"},
+     "query": {"en": "Summarize the last few minutes in 2 sentences.",
+               "de": "Fasse die letzten Minuten in 2 Sätzen zusammen."}},
 ]
 HOTKEY_FOCUS = "ctrl+alt+space"
 HOTKEY_TRANSLATE = "ctrl+alt+t"

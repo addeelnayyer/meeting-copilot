@@ -14,6 +14,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import numpy as np
@@ -41,6 +42,24 @@ SAMPLES = 5
 WARMUP_TRIES = 5
 
 
+class Call(NamedTuple):
+    kind: str  # one of CALL_TYPES
+    label: str  # the input line, shown with the samples
+    system: str
+    prompt: str
+
+    @property
+    def schema(self):
+        return SUGGESTION_SCHEMA if self.kind in JSON_CALLS else None
+
+
+class Result(NamedTuple):
+    label: str
+    secs: float | None  # None: the call failed
+    valid: bool
+    sample: str
+
+
 def matches(schema, value):
     """value fits the (closed) JSON schema: object/array/string types and required keys."""
     kind = schema.get("type")
@@ -56,11 +75,11 @@ def matches(schema, value):
 
 
 def workload():
-    """[(call type, label, system, prompt)] in a fixed order."""
+    """[Call] in a fixed order."""
     system = config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8") + reply_language_rule()
     calls = []
     for meeting in json.loads(DATA.read_text(encoding="utf-8"))["meetings"]:
-        facts = Facts(fresh=True)  # never saved: merge() is not called
+        facts = Facts(path=None, fresh=True)  # only rendered, never saved
         facts.data = dict(meeting["facts"])
         memory = Memory()
         memory.text = meeting["memory"]
@@ -72,9 +91,9 @@ def workload():
                 continue
             label = f"[{line['lang']}] {line['text']}"
             prompt = meeting_context(facts, memory, meeting["knowledge"], transcript) + PROACTIVE_INSTRUCTION
-            calls.append((meeting["call"], label, system, prompt))
+            calls.append(Call(meeting["call"], label, system, prompt))
             target = translation_target(line["lang"])
-            calls.append(("translation", f"{label} -> {target}", TRANSLATE_SYSTEM.format(target=target), line["text"]))
+            calls.append(Call("translation", f"{label} -> {target}", TRANSLATE_SYSTEM.format(target=target), line["text"]))
     return calls
 
 
@@ -98,35 +117,38 @@ class OllamaDown(Exception):
     pass
 
 
+async def _complete(provider, call):
+    try:
+        return await provider.complete(call.system, call.prompt, call.schema)
+    except httpx.ConnectError as e:
+        raise OllamaDown(str(e)) from e
+
+
 async def run_model(provider, model, calls):
-    """{call type: [(label, seconds or None, valid, sample)]}; None seconds marks a failed call."""
+    """{call type: [Result]}"""
     provider.model = model
     t = time.perf_counter()
     await provider.warmup()
     for attempt in range(WARMUP_TRIES):  # a large model can take longer than one request timeout to load
         try:
-            await provider.complete(calls[0][2], calls[0][3], SUGGESTION_SCHEMA)
+            await _complete(provider, calls[0])
             break
-        except httpx.ConnectError as e:
-            raise OllamaDown(str(e)) from e
         except httpx.TimeoutException:
             if attempt == WARMUP_TRIES - 1:
                 raise
     print(f"{model}: warm-up {time.perf_counter() - t:.1f} s")
     results = {kind: [] for kind in CALL_TYPES}
-    for kind, label, system, prompt in calls:
+    for call in calls:
         t = time.perf_counter()
         try:
-            text = await provider.complete(system, prompt, SUGGESTION_SCHEMA if kind in JSON_CALLS else None)
-        except httpx.ConnectError as e:
-            raise OllamaDown(str(e)) from e
-        except httpx.HTTPError as e:
-            results[kind].append((label, None, False, f"ERROR {type(e).__name__}: {_short(e)}"))
+            text = await _complete(provider, call)
+        except (httpx.HTTPError, KeyError, ValueError) as e:  # ValueError: a reply that isn't JSON
+            results[call.kind].append(Result(call.label, None, False, f"ERROR {type(e).__name__}: {_short(e)}"))
             continue
         secs = time.perf_counter() - t
-        valid, sample = _output(kind, text)
-        results[kind].append((label, secs, valid, sample))
-        print(f"  {kind:<11} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(label, 60)}")
+        valid, sample = _output(call.kind, text)
+        results[call.kind].append(Result(call.label, secs, valid, sample))
+        print(f"  {call.kind:<11} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
     return results
 
 
@@ -136,26 +158,26 @@ def _picks(n):
 
 
 def report(results):
-    """results: {model: {call type: [...]}} -> summary table, then the samples of all models side by side."""
+    """results: {model: {call type: [Result]}} -> summary table, then the samples of all models side by side."""
     models = list(results)
     print("\n" + "=" * 78)
     print(f"{'model':<28} {'call type':<12} {'n':>3} {'p50 ms':>7} {'p95 ms':>7}  {'valid JSON':>10}  errors")
     for model in models:
         for kind in CALL_TYPES:
             rows = results[model][kind]
-            lat = [s for _, s, _, _ in rows if s is not None]
+            lat = [r.secs for r in rows if r.secs is not None]
             p50, p95 = (f"{np.percentile(lat, q) * 1000:.0f}" for q in (50, 95)) if lat else ("-", "-")
-            valid = f"{sum(v for _, _, v, _ in rows)}/{len(rows)}" if kind in JSON_CALLS else ""
-            errors = sum(s is None for _, s, _, _ in rows)
+            valid = f"{sum(r.valid for r in rows)}/{len(rows)}" if kind in JSON_CALLS else ""
+            errors = sum(r.secs is None for r in rows)
             print(f"{model:<28} {kind:<12} {len(rows):>3} {p50:>7} {p95:>7}  {valid:>10}  {errors or ''}")
     for kind in CALL_TYPES:
         rows = results[models[0]][kind]
         for n, i in enumerate(_picks(len(rows)), 1):
-            print(f"\n--- {kind} sample {n}: {_short(rows[i][0], 200)}")
+            print(f"\n--- {kind} sample {n}: {_short(rows[i].label, 200)}")
             for model in models:
-                _, secs, _, sample = results[model][kind][i]
-                ms = f"{secs * 1000:.0f} ms" if secs is not None else "failed"
-                print(f"  {model} ({ms}): {sample}")
+                r = results[model][kind][i]
+                ms = f"{r.secs * 1000:.0f} ms" if r.secs is not None else "failed"
+                print(f"  {model} ({ms}): {r.sample}")
 
 
 async def main(models):
@@ -170,7 +192,8 @@ async def main(models):
     if missing:
         return 1
     calls = workload()
-    print(f"Ollama {config.OLLAMA_URL}, prompt {config.SYSTEM_PROMPT_FILE.name}, LANGUAGES {','.join(config.LANGUAGES)}, "
+    version = httpx.get(f"{config.OLLAMA_URL}/api/version", timeout=3).json().get("version", "?")
+    print(f"Ollama {version} at {config.OLLAMA_URL}, prompt {config.SYSTEM_PROMPT_FILE.name}, LANGUAGES {','.join(config.LANGUAGES)}, "
           f"{len(calls)} calls per model")
     results = {}
     try:

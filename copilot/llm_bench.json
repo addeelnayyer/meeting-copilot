@@ -2,7 +2,6 @@
   "_note": "Synthetic meetings for python -m copilot.llm_bench. Every company, person and number is made up.",
   "meetings": [
     {
-      "name": "English/Urdu sales call",
       "call": "suggestion",
       "facts": {"Kunde": "Indus Freight", "Flotte": "120 Lkw", "Strecke": "Karachi - Lahore"},
       "memory": "",
@@ -23,7 +22,6 @@
       ]
     },
     {
-      "name": "German sales call",
       "call": "german",
       "facts": {"Kunde": "Brenner Maschinenbau GmbH", "Standorte": "3", "Maschinen": "ca. 80"},
       "memory": "## Verlauf (what was discussed, in order)\n- Begrüßung, kurze Vorstellung beider Firmen\n## Entscheidungen & Zusagen\n- noch keine\n## Offene Punkte & Einwände\n- noch keine\n## Stimmung & Prioritäten der Teilnehmer\n- interessiert, sucht Ablösung für Excel",

@@ -24,7 +24,7 @@ from .assistant import (
     PROACTIVE_INSTRUCTION,
     TRANSLATE_SYSTEM,
     meeting_context,
-    reply_language_rule,
+    suggestion_system,
     translation_target,
 )
 from .audio import PARTICIPANT
@@ -53,6 +53,10 @@ class Call(NamedTuple):
         return SUGGESTION_SCHEMA if self.kind in JSON_CALLS else None
 
 
+# Not part of the workload, so no timed call starts on a prompt Ollama has just cached.
+WARMUP = Call("suggestion", "warm-up", "Reply with the JSON object you are given a schema for.", "Hello.")
+
+
 class Result(NamedTuple):
     label: str
     secs: float | None  # None: the call failed
@@ -76,7 +80,7 @@ def matches(schema, value):
 
 def workload():
     """[Call] in a fixed order."""
-    system = config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8") + reply_language_rule()
+    system = suggestion_system()
     calls = []
     for meeting in json.loads(DATA.read_text(encoding="utf-8"))["meetings"]:
         facts = Facts(path=None, fresh=True)  # only rendered, never saved
@@ -102,9 +106,9 @@ def _short(text, n=240):
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
-def _output(kind, text):
+def _output(call, text):
     """(valid, sample text) of one reply."""
-    if kind not in JSON_CALLS:
+    if not call.schema:
         return True, _short(text)
     result = parse_json(text)
     if not isinstance(result, dict) or not matches(SUGGESTION_SCHEMA, result):
@@ -113,25 +117,13 @@ def _output(kind, text):
     return True, _short(f"{result['trigger']}: {said}")
 
 
-class OllamaDown(Exception):
-    pass
-
-
-async def _complete(provider, call):
-    try:
-        return await provider.complete(call.system, call.prompt, call.schema)
-    except httpx.ConnectError as e:
-        raise OllamaDown(str(e)) from e
-
-
 async def run_model(provider, model, calls):
     """{call type: [Result]}"""
     provider.model = model
     t = time.perf_counter()
-    await provider.warmup()
     for attempt in range(WARMUP_TRIES):  # a large model can take longer than one request timeout to load
         try:
-            await _complete(provider, calls[0])
+            await provider.complete(WARMUP.system, WARMUP.prompt, WARMUP.schema)
             break
         except httpx.TimeoutException:
             if attempt == WARMUP_TRIES - 1:
@@ -141,12 +133,14 @@ async def run_model(provider, model, calls):
     for call in calls:
         t = time.perf_counter()
         try:
-            text = await _complete(provider, call)
+            text = await provider.complete(call.system, call.prompt, call.schema)
+        except httpx.ConnectError:
+            raise  # Ollama is gone: main() stops the run
         except (httpx.HTTPError, KeyError, ValueError) as e:  # ValueError: a reply that isn't JSON
             results[call.kind].append(Result(call.label, None, False, f"ERROR {type(e).__name__}: {_short(e)}"))
             continue
         secs = time.perf_counter() - t
-        valid, sample = _output(call.kind, text)
+        valid, sample = _output(call, text)
         results[call.kind].append(Result(call.label, secs, valid, sample))
         print(f"  {call.kind:<11} {secs * 1000:6.0f} ms  {'' if valid else 'invalid  '}{_short(call.label, 60)}")
     return results
@@ -192,14 +186,14 @@ async def main(models):
     if missing:
         return 1
     calls = workload()
-    version = httpx.get(f"{config.OLLAMA_URL}/api/version", timeout=3).json().get("version", "?")
+    version = await provider.version() or "?"
     print(f"Ollama {version} at {config.OLLAMA_URL}, prompt {config.SYSTEM_PROMPT_FILE.name}, LANGUAGES {','.join(config.LANGUAGES)}, "
           f"{len(calls)} calls per model")
     results = {}
     try:
         for model in models:
             results[model] = await run_model(provider, model, calls)
-    except OllamaDown as e:
+    except httpx.ConnectError as e:
         print(f"Lost the connection to Ollama at {config.OLLAMA_URL} ({e}). Is it still running?")
         return 1
     except httpx.HTTPStatusError as e:

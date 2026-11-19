@@ -36,9 +36,10 @@ REPLY_LANGUAGE_RULE = "\n# Language\nWrite every suggestion in the language with
 PROACTIVE_INSTRUCTION = "\n\nReagiere auf den letzten [Participant]-Beitrag."
 
 
-def reply_language_rule():
-    """Appended to the role prompt when REPLY_LANGUAGE is set."""
-    return REPLY_LANGUAGE_RULE.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
+def suggestion_system(addendum=""):
+    """The role prompt of suggestions and answers, with the reply-language rule when REPLY_LANGUAGE is set."""
+    rule = REPLY_LANGUAGE_RULE.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
+    return config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8") + addendum + rule
 
 
 def meeting_context(facts, memory, knowledge, transcript):
@@ -61,8 +62,8 @@ class Assistant:
         self.kb = kb
         self.llm = llm
         self.emit = emit  # callable(dict), must be called on the loop
-        self.system = config.SYSTEM_PROMPT_FILE.read_text(encoding="utf-8")
-        self.language_rule = reply_language_rule()
+        self.system = suggestion_system()
+        self.ask_system = suggestion_system(ASK_ADDENDUM)
         self.proactive = True
         self.translate = False
         self._one_at_a_time = asyncio.Lock()  # translations and transliterations, one at a time
@@ -211,7 +212,7 @@ class Assistant:
             return
         prompt = await self._context(latest) + PROACTIVE_INSTRUCTION
         try:
-            result, engine, secs = await self.llm.generate_json(self.system + self.language_rule, prompt)
+            result, engine, secs = await self.llm.generate_json(self.system, prompt)
         except Exception as e:  # a timeout's message is empty
             self.emit({"type": "error", "text": f"LLM: {str(e) or type(e).__name__}"})
             return
@@ -239,7 +240,7 @@ class Assistant:
         prompt = (await self._context(f"{query} {self._last_participant_text()}")
                   + f"\n\n[USER QUESTION]\n{query}")
         try:
-            result, engine, secs = await self.llm.generate_json(self.system + ASK_ADDENDUM + self.language_rule,
+            result, engine, secs = await self.llm.generate_json(self.ask_system,
                                                                 prompt)
         except Exception as e:
             self.emit({"type": "error", "text": f"LLM: {str(e) or type(e).__name__}"})

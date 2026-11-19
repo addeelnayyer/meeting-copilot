@@ -154,14 +154,14 @@ class WhisperKitEngine:
 
     name = "whisperkit"
 
-    def __init__(self, launch=None):
+    def __init__(self, launch=None, on_status=None):
         if launch is None:
             model = model_path()
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
             launch = functools.partial(Server, model)
         self._launch = launch
         self._restarted = False
-        self.on_status = lambda status: None  # SttWorker shows the restart in the UI
+        self.on_status = on_status or (lambda status: None)  # the restart, shown in the UI
         self._start()
         self._language = StickyLanguage()
 

@@ -188,7 +188,7 @@ class Assistant:
         try:
             result, engine, secs = await self.llm.generate_json(self.system + self.language_rule, prompt)
         except Exception as e:  # a timeout's message is empty
-            self.emit({"type": "error", "text": f"LLM: {str(e) or type(e).__name__}"})
+            self.emit({"type": "error", "text": f"LLM: {ui_text(e)}"})
             return
         self._engine(engine, secs)
         if not isinstance(result, dict):
@@ -217,7 +217,7 @@ class Assistant:
             result, engine, secs = await self.llm.generate_json(self.system + ASK_ADDENDUM + self.language_rule,
                                                                 prompt)
         except Exception as e:
-            self.emit({"type": "error", "text": f"LLM: {str(e) or type(e).__name__}"})
+            self.emit({"type": "error", "text": f"LLM: {ui_text(e)}"})
             return
         self._engine(engine, secs)
         if not isinstance(result, dict):
@@ -241,7 +241,7 @@ class Assistant:
             try:
                 text, engine, secs = await self.llm.generate(TRANSLATE_SYSTEM.format(target=target), seg.text)
             except Exception as e:
-                self.emit({"type": "error", "text": f"Translation: {str(e) or type(e).__name__}"})
+                self.emit({"type": "error", "text": f"Translation: {ui_text(e)}"})
                 return
         self.emit({"type": "translation", "id": seg.id, "source": seg.source, "text": text.strip(),
                    "target": target.upper(), "engine": engine, "ms": round(secs * 1000)})

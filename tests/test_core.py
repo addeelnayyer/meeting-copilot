@@ -353,7 +353,7 @@ class FakeEngine:
 def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
     built = []
 
-    def kit():
+    def kit(on_status):
         built.append(FakeEngine(fail))  # only reached when the start succeeds
         return built[-1]
 

@@ -72,8 +72,12 @@ def t(key, **params):
 
 
 def _render(lang, key, params):
-    params = {k: v.render(lang) if isinstance(v, UiError) else v for k, v in params.items()}
+    params = {k: _error_text(v, lang) if isinstance(v, BaseException) else v for k, v in params.items()}
     return TABLES[lang][key].format(**params)
+
+
+def _error_text(error, lang):
+    return error.render(lang) if isinstance(error, UiError) else str(error) or type(error).__name__
 
 
 class UiError(RuntimeError):
@@ -89,4 +93,4 @@ class UiError(RuntimeError):
 
 def ui_text(error):
     """How `error` reads in the window: translated for a UiError, else its own message."""
-    return error.render(language()) if isinstance(error, UiError) else str(error) or type(error).__name__
+    return _error_text(error, language())

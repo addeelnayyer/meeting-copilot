@@ -1,5 +1,6 @@
 """STT worker: one STT engine, chunks from both sources, labelled segments out."""
 
+import functools
 import platform
 import queue
 import sys
@@ -56,15 +57,16 @@ def chosen_stt_engine(setting):
     return stt_engine(setting, sys.platform, platform.machine(), whisperkit.binary())
 
 
-def build_stt_engine(setting=None):
+def build_stt_engine(setting=None, on_status=None):
     """Build and warm up the chosen STT engine (`setting` overrides STT_ENGINE) once; it then
     serves transcribe(chunk) and close(). WhisperKit that fails to start or become healthy falls
-    back to faster-whisper, like a missing binary or a failed model download; the reason is printed."""
+    back to faster-whisper, like a missing binary or a failed model download; the reason is printed.
+    WhisperKit reports a server restart through `on_status`."""
     setting = setting or config.STT_ENGINE
     name, reason = chosen_stt_engine(setting)
     if name == whisperkit.WhisperKitEngine.name:
         try:
-            return _build_warm(ENGINES[name])
+            return _build_warm(functools.partial(ENGINES[name], on_status=on_status))
         except Exception as e:
             name, reason = FasterWhisperEngine.name, _fallback_reason(setting, e)
     if reason:
@@ -158,8 +160,7 @@ class SttWorker(threading.Thread):
         self.engine = None
 
     def run(self):
-        self.engine = build_stt_engine()
-        self.engine.on_status = self.on_status  # WhisperKit's restart note
+        self.engine = build_stt_engine(on_status=self.on_status)
         try:
             self.on_status({"ready": True, "engine": self.engine.name})  # built warm
             while not self.stop_event.is_set():

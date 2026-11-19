@@ -29,3 +29,11 @@ def test_unknown_ui_language_falls_back_to_english_with_a_hint(monkeypatch, caps
 def test_lookup_fills_placeholders(monkeypatch):
     monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     assert strings.t("saved.note", name="Meeting 1.md") == "Meeting saved: Meeting 1.md"
+
+
+def test_hotkey_tooltips_show_the_configured_hotkey_in_the_ui_language(monkeypatch):
+    monkeypatch.setattr(config, "HOTKEY_FOCUS", "ctrl+alt+space")
+    monkeypatch.setattr(config, "UI_LANGUAGE", "de")
+    assert strings.event()["strings"]["ask.placeholder"] == "Frage stellen (Strg+Alt+Leertaste) …"
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    assert strings.event()["strings"]["ask.placeholder"] == "Ask a question (Ctrl+Alt+Space) …"

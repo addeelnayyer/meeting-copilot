@@ -21,15 +21,15 @@ TABLES = {
         "meter.user": "You (microphone)",
         "meter.participant": "Participants (loopback)",
         "proactive.label": "Proactive",
-        "proactive.title": "Ctrl+Alt+P",
+        "proactive.title": "{hotkey}",
         "translate.label": "Translate",
-        "translate.title": "Ctrl+Alt+T",
-        "on_top.title": "Always on top (Ctrl+Alt+O)",
+        "translate.title": "{hotkey}",
+        "on_top.title": "Always on top ({hotkey})",
         "opacity.title": "Opacity",
         "open_meetings.title": "Open saved meetings",
         "open_notes.title": "Open the knowledge base (changes apply at once)",
         "open_settings.title": "Open the settings (.env) (apply after a restart)",
-        "mic.title": "Microphone on/off (Ctrl+Alt+M). The participants are still heard.",
+        "mic.title": "Microphone on/off ({hotkey}). The participants are still heard.",
         "mic.on": "Mic on",
         "mic.off": "Mic off",
         "pending.title": "Show now",
@@ -48,9 +48,10 @@ TABLES = {
         "facts.title": "Facts",
         "memory.title": "Memory (every 5 min)",
         "none_yet": "(none yet)",
-        "ask.placeholder": "Ask a question (Ctrl+Alt+Space) …",
+        "ask.placeholder": "Ask a question ({hotkey}) …",
         "ask.button": "Ask",
         "key.ctrl": "Ctrl",
+        "key.space": "Space",
     },
     "de": {
         "meeting.start": "Meeting starten",
@@ -66,15 +67,15 @@ TABLES = {
         "meter.user": "Du (Mikrofon)",
         "meter.participant": "Teilnehmer (Loopback)",
         "proactive.label": "Proaktiv",
-        "proactive.title": "Strg+Alt+P",
+        "proactive.title": "{hotkey}",
         "translate.label": "Übersetzen",
-        "translate.title": "Strg+Alt+T",
-        "on_top.title": "Immer im Vordergrund (Strg+Alt+O)",
+        "translate.title": "{hotkey}",
+        "on_top.title": "Immer im Vordergrund ({hotkey})",
         "opacity.title": "Deckkraft",
         "open_meetings.title": "Gespeicherte Meetings öffnen",
         "open_notes.title": "Wissensbasis öffnen (Änderungen gelten sofort)",
         "open_settings.title": "Einstellungen (.env) öffnen (gelten nach Neustart)",
-        "mic.title": "Mikrofon an/aus (Strg+Alt+M). Die Teilnehmer werden weiter gehört.",
+        "mic.title": "Mikrofon an/aus ({hotkey}). Die Teilnehmer werden weiter gehört.",
         "mic.on": "Mikro an",
         "mic.off": "Mikro aus",
         "pending.title": "Sofort anzeigen",
@@ -93,9 +94,10 @@ TABLES = {
         "facts.title": "Fakten",
         "memory.title": "Gedächtnis (alle 5 min)",
         "none_yet": "(noch keine)",
-        "ask.placeholder": "Frage stellen (Strg+Alt+Leertaste) …",
+        "ask.placeholder": "Frage stellen ({hotkey}) …",
         "ask.button": "Fragen",
         "key.ctrl": "Strg",
+        "key.space": "Leertaste",
     },
 }
 
@@ -117,7 +119,24 @@ def t(key, **values):
     return TABLES[language()][key].format(**values)
 
 
+def hotkey(combo):
+    """"ctrl+alt+space" -> "Strg+Alt+Leertaste" in the UI language."""
+    table = TABLES[language()]
+    return "+".join(table.get(f"key.{k}", k.capitalize()) for k in combo.split("+"))
+
+
+# Strings that show a hotkey; their {hotkey} comes from config, so a changed hotkey shows everywhere.
+_HOTKEY_STRINGS = {
+    "proactive.title": "HOTKEY_PROACTIVE",
+    "translate.title": "HOTKEY_TRANSLATE",
+    "on_top.title": "HOTKEY_ON_TOP",
+    "mic.title": "HOTKEY_MIC",
+    "ask.placeholder": "HOTKEY_FOCUS",
+}
+
+
 def event():
     """The event that gives the page its strings; sent ahead of every other event on connect."""
     lang = language()
-    return {"type": "strings", "lang": lang, "strings": TABLES[lang]}
+    filled = {key: t(key, hotkey=hotkey(getattr(config, name))) for key, name in _HOTKEY_STRINGS.items()}
+    return {"type": "strings", "lang": lang, "strings": {**TABLES[lang], **filled}}

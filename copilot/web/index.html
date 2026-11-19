@@ -59,7 +59,8 @@
   .card { cursor: pointer; }
   .card.old { opacity: .7; }
   .card.pinned { opacity: 1; outline: 1px solid var(--confident); }
-  .card.pinned .meta::after { content: var(--pinned); margin-left: auto; color: var(--confident); }
+  .card .pin-label { display: none; margin-left: auto; color: var(--confident); }
+  .card.pinned .pin-label { display: inline; }
   body.single .card:not(.old) .sugg { font-size: 27px; }
   #pending { display: none; margin: 8px 12px 0; padding: 6px 10px; border: 1px solid var(--confident);
     border-radius: 4px; background: #0f2a3a; color: var(--text); font: 600 13px "Segoe UI", sans-serif;
@@ -178,14 +179,12 @@ let S = {};
 const t = (id, vars = {}) => (S[id] ?? id).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
 
 function setStrings(ev) {
-  // Reconnected to a server restarted with another UI_LANGUAGE: start over rather than mix languages.
-  if (document.documentElement.lang && document.documentElement.lang !== ev.lang) { location.reload(); return; }
-  // Static elements get their text once; content set by events (e.g. the facts) is not overwritten.
-  const first = !document.body.classList.contains("ready");
+  // The table only changes with a restart. A reconnect to a server restarted with another
+  // UI_LANGUAGE starts over rather than mixing languages; otherwise the page already has it.
+  if (document.documentElement.lang) { if (document.documentElement.lang !== ev.lang) location.reload(); return; }
   S = ev.strings;
   document.documentElement.lang = ev.lang;
-  document.body.style.setProperty("--pinned", JSON.stringify(t("card.pinned")));
-  for (const el of document.querySelectorAll("[data-t]")) if (first) el.textContent = t(el.dataset.t);
+  for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
   for (const el of document.querySelectorAll("[data-t-title]")) el.title = t(el.dataset.tTitle);
   for (const el of document.querySelectorAll("[data-t-placeholder]")) el.placeholder = t(el.dataset.tPlaceholder);
   document.body.classList.add("ready");
@@ -200,7 +199,8 @@ function card(ev, isAnswer) {
   el.title = t("card.title");
   el.onclick = () => pin(el);
   const label = isAnswer ? `${esc(t("card.question"))} <b>${esc(ev.query)}</b>` : `<b>${esc(ev.trigger)}</b>`;
-  el.innerHTML = `<div class="meta">${label}<span>${esc(engineName(ev.engine))} ${ev.ms} ms</span></div>` +
+  el.innerHTML = `<div class="meta">${label}<span>${esc(engineName(ev.engine))} ${ev.ms} ms</span>` +
+    `<span class="pin-label">${esc(t("card.pinned"))}</span></div>` +
     (ev.suggestions || []).map((s) => {
       const tone = String(s.tone || "").toLowerCase().replace(/\s+/g, "-");
       return `<div class="sugg t-${esc(tone)}"><small>${esc(s.intent)} · ${esc(s.tone)}</small>${esc(s.text)}</div>`;

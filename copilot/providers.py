@@ -194,6 +194,7 @@ class OllamaProvider(Provider):
         body = {
             "model": self.model,
             "stream": False,
+            "think": False,  # the fallback exists to be fast; models without thinking ignore it
             "keep_alive": "30m",
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "options": {"temperature": 0.3},
@@ -208,7 +209,7 @@ class OllamaProvider(Provider):
         """Load the model into memory so the first fallback isn't a cold start."""
         try:
             await self._http.post(f"{config.OLLAMA_URL}/api/chat",
-                                  json={"model": self.model, "messages": [], "keep_alive": "30m"})
+                                  json={"model": self.model, "messages": [], "think": False, "keep_alive": "30m"})
         except httpx.HTTPError as e:
             print(f"Ollama warmup failed: {e}")
 

@@ -128,6 +128,8 @@ if not SYSTEM_PROMPT_FILE.is_file():  # cmd.exe sets PROMPT=$P$G for its own pro
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 # --- Server / UI ---
+# Language of everything the copilot writes for the window: en | de (unknown -> en).
+UI_LANGUAGE = _env("UI_LANGUAGE", "de")
 HOST = "127.0.0.1"
 PORT = int(_env("PORT", "8765"))
 WINDOW_SIZE = (520, 900)

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from . import config, export
 from .audio import PARTICIPANT
 from .memory import Memory, summarize
+from .strings import t, ui_text
 from .transcript import Transcript, new_session_path
 
 ASK_ADDENDUM = """
@@ -114,7 +115,7 @@ class Assistant:
                     source.start() if on else source.stop()
         except Exception as e:
             print(f"Audio:    {e}")
-            self.audio_error = str(e)
+            self.audio_error = ui_text(e)
             self.active = False
             for source in self.capture.sources if self.capture else []:
                 source.stop()
@@ -169,9 +170,9 @@ class Assistant:
 
     def _last_participant_text(self, max_chars=300):
         """Tail of the latest participant turn (a monologue becomes one long turn)."""
-        for t in reversed(self.transcript.turns):
-            if t.source == PARTICIPANT:
-                return t.text[-max_chars:]
+        for turn in reversed(self.transcript.turns):
+            if turn.source == PARTICIPANT:
+                return turn.text[-max_chars:]
         return ""
 
     async def _context(self, rag_query):
@@ -220,7 +221,7 @@ class Assistant:
             return
         self._engine(engine, secs)
         if not isinstance(result, dict):
-            self.emit({"type": "error", "text": "Antwort war kein gültiges JSON."})
+            self.emit({"type": "error", "text": t("llm.not_json")})
             return
         self._merge_facts(result)
         self._card({"type": "answer", "query": query, "trigger": result.get("trigger", ""),

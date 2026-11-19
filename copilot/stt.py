@@ -9,6 +9,7 @@ import time
 from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 loads)
 from . import config
 from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
+from .strings import t
 from . import whisperkit
 
 
@@ -158,6 +159,7 @@ class SttWorker(threading.Thread):
 
     def run(self):
         self.engine = build_stt_engine()
+        self.engine.on_status = self.on_status  # WhisperKit's restart note
         try:
             self.on_status({"ready": True, "engine": self.engine.name})  # built warm
             while not self.stop_event.is_set():
@@ -184,12 +186,12 @@ class SttWorker(threading.Thread):
         failed, fallback = self.engine.name, FasterWhisperEngine.name
         print(f"STT: {failed} failed ({error}), switching to {fallback} for the rest of the run")
         self.engine.close()
-        status = {"ready": False, "engine": fallback, "note": f"{failed} ausgefallen ({error}), STT jetzt mit {fallback}"}
+        status = {"ready": False, "engine": fallback, "note": t("stt.switched", failed=failed, error=error, fallback=fallback)}
         self.on_status(status)
         try:
             self.engine = build_stt_engine(fallback)  # built warm
         except Exception as e:
-            self.on_status({**status, "note": f"{failed} ausgefallen, {fallback} auch: {e}"})
+            self.on_status({**status, "note": t("stt.fallback_failed", failed=failed, fallback=fallback, error=e)})
             raise
         self.on_status({**status, "ready": True})
 

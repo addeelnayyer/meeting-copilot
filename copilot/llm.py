@@ -12,6 +12,7 @@ import re
 import time
 
 from . import config
+from .strings import t
 from .providers import build_providers
 
 
@@ -92,7 +93,7 @@ class LLM:
         if p is None or not p.configured:
             print(f"LLM provider '{provider_id}' is not configured (missing key/URL/model) - using Ollama only.")
             p = self.fallback
-            self.note = f"{provider_id}: kein API-Key/URL" if provider_id != "ollama" else ""
+            self.note = t("llm.no_key", provider=provider_id) if provider_id != "ollama" else ""
         else:
             self.note = ""
         self.primary = p
@@ -117,11 +118,11 @@ class LLM:
     def _update_ollama_note(self, running=True):
         m = self.fallback.model
         if not running:
-            self.ollama_note = "Ollama läuft nicht (ollama.com): kein lokaler Fallback"
+            self.ollama_note = t("ollama.not_running")
         elif self.ollama_models and m not in self.ollama_models:
-            self.ollama_note = f"Ollama-Modell {m} fehlt: ollama pull {m}, oder oben ein installiertes wählen"
+            self.ollama_note = t("ollama.model_missing", model=m)
         elif not self.ollama_models:
-            self.ollama_note = f"Kein Ollama-Modell installiert: ollama pull {m}"
+            self.ollama_note = t("ollama.no_model", model=m)
         else:
             self.ollama_note = ""
 
@@ -175,10 +176,10 @@ class LLM:
         wait = provider.retry_after(error)
         if wait is not None:
             self._skip_until = time.monotonic() + wait
-            self.note = f"{provider.label}: Limit/Kontingent erreicht, wieder in {max(1, wait // 60)} min"
+            self.note = t("llm.quota", provider=provider.label, minutes=max(1, wait // 60))
         elif self._fails >= config.BREAKER_FAILS:
             self._skip_until = time.monotonic() + config.BREAKER_COOLDOWN_S
-            self.note = f"{provider.label}-Fehler, Pause {config.BREAKER_COOLDOWN_S} s"
+            self.note = t("llm.errors", provider=provider.label, seconds=config.BREAKER_COOLDOWN_S)
         print(f"{provider.label} failed ({type(error).__name__}: {str(error)[:300]}) - using Ollama")
 
     async def generate_json(self, system, prompt, schema=SUGGESTION_SCHEMA):

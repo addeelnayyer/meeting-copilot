@@ -371,13 +371,32 @@ def test_second_failure_switches_to_faster_whisper_with_a_note(worker):
     assert len(worker.launcher.servers) == 2  # no second restart
     assert all(s.closed for s in worker.launcher.servers)
     assert len(worker.fallbacks) == 1
-    first, switching, switched = worker.statuses
+    first, restarting, restarted, switching, switched = worker.statuses
     assert first == {"ready": True, "engine": "whisperkit"}
+    assert not restarting["ready"] and restarting["engine"] == "whisperkit" and "exited with code -9" in restarting["note"]
+    assert restarted == {"ready": True, "engine": "whisperkit", "note": ""}
     assert not switching["ready"] and switched["ready"]  # "STT loading" while faster-whisper loads
     assert switching["note"] == switched["note"]
     assert switched["engine"] == "faster-whisper"
     assert "whisperkit" in switched["note"] and "faster-whisper" in switched["note"]
     assert "exited with code -9" in switched["note"]  # why
+
+
+@pytest.mark.parametrize("lang, restarting, switched", [
+    ("en", "whisperkit failed ({reason}), restarting it", "whisperkit failed ({error}), STT now on faster-whisper"),
+    ("de", "whisperkit ausgefallen ({reason}), wird neu gestartet",
+     "whisperkit ausgefallen ({error}), STT jetzt mit faster-whisper"),
+])
+def test_stt_notes_follow_ui_language(worker, monkeypatch, lang, restarting, switched):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    worker.launcher.servers[-1].kill()
+    worker.transcribe()
+    worker.launcher.servers[-1].kill()
+    worker.transcribe()
+    reason = "whisperkit-cli exited with code -9"
+    error = f"whisperkit-cli failed again: {reason}"
+    assert worker.statuses[1]["note"] == restarting.format(reason=reason)
+    assert worker.statuses[-1]["note"] == switched.format(error=error)
 
 
 def test_failed_restart_switches_to_faster_whisper(worker):

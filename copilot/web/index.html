@@ -260,6 +260,14 @@ function translation(ev) {
   box.scrollTop = box.scrollHeight;
 }
 
+// The line was spoken in a TRANSLITERATE language: show it in Latin script, the original as tooltip.
+function transliteration(ev) {
+  const seg = $("s" + ev.id);
+  if (!seg) return;
+  seg.title ||= seg.textContent.trim();
+  seg.textContent = ev.text + " ";
+}
+
 function clearScreen() {
   saved = "";
   pending = pinned = null;
@@ -347,6 +355,7 @@ const handlers = {
   presets,
   segment,
   translation,
+  transliteration,
   retract: (ev) => { const s = $("s" + ev.id); const turn = s?.parentElement; s?.remove();
     if (turn && !turn.querySelector(".seg")) turn.remove(); },
   suggestion,

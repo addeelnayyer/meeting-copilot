@@ -67,6 +67,7 @@ class Transcript:
                         self.turns.remove(t)
                     self._recent.remove((s, t))
                     self.segments.remove(s)
+                    s.retracted = True
                     retracted.append(s.id)
 
         last = self.turns[-1] if self.turns else None
@@ -89,7 +90,7 @@ class Transcript:
     def _log(self, seg):
         if not self.session_path:
             return
-        rec = {k: v for k, v in asdict(seg).items() if k != "t_end"}
+        rec = {k: v for k, v in asdict(seg).items() if k not in ("t_end", "retracted")}
         with open(self.session_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 

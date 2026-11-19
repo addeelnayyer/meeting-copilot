@@ -144,7 +144,10 @@ LANGUAGES=de,en,tr        # German speaker, meetings in German, English and Turk
 LANGUAGES=ar,en           # Arabic speaker; English segments are translated into Arabic
 WHISPER_LANGUAGE=fr       # only French: skips detection, a little faster
 REPLY_LANGUAGE=en         # force English suggestions (by default: German, or the interviewer's language)
+TRANSLITERATE=ur          # show Urdu lines in Roman Urdu
 ```
+
+`TRANSLITERATE` (comma-separated, empty by default) lists languages whose lines you would rather read in Latin script. Such a line appears at once in its own script and is replaced in place by its transliteration (for Urdu: Roman Urdu) when the LLM returns it; English words, names and numbers stay as they are. It uses the same LLM and the same one-at-a-time queue as translation, and the two are independent: with both on, a line shows both. The transcript the LLM, facts and memory work with keeps the original script.
 
 The suggestion prompts are written for German client calls and German/English interviews; the window labels are German. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 

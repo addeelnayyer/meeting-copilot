@@ -40,6 +40,8 @@ WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")  # auto (one of LANGUAGES, s
 LANGUAGES = [code.strip() for code in _env("LANGUAGES", "de,en").split(",") if code.strip()]
 # Force the reply language of the suggestions (e.g. "en"); empty = as the prompt says.
 REPLY_LANGUAGE = _env("REPLY_LANGUAGE", "")
+# Languages whose lines are rewritten in Latin script (e.g. "ur": Urdu -> Roman Urdu); empty = off.
+TRANSLITERATE = [code.strip() for code in _env("TRANSLITERATE", "").split(",") if code.strip()]
 LANG_DETECT_EVERY = 4  # re-detect language every Nth chunk per source
 PROMPT_CONTEXT_CHARS = 200
 # WhisperKit (macOS, Homebrew whisperkit-cli): an argmaxinc/whisperkit-coreml model ID
@@ -91,7 +93,7 @@ CUSTOM_MODEL = _env("CUSTOM_MODEL", "")
 OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = _env("OLLAMA_MODEL", "granite4:7b-a1b-h")
 OLLAMA_TIMEOUT_S = 30
-TRANSLATE_MAX_WAIT_S = 10  # translations run one at a time; a line waiting longer is skipped
+TRANSLATE_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
 
 # --- Assistant ---
 # React when the participant has finished a turn (this long without new speech), but during a

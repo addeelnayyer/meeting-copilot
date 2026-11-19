@@ -623,3 +623,118 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
         assert fired == [True]
 
     asyncio.run(run())
+
+
+# --- transliteration -------------------------------------------------------------------
+class RecordingLLM:
+    def __init__(self, reply=lambda prompt: "Roman " + prompt, delay=0.0, error=None):
+        self.calls, self.reply, self.delay, self.error = [], reply, delay, error
+
+    async def generate(self, system, prompt):
+        self.calls.append((system, prompt))
+        await asyncio.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return self.reply(prompt), "ollama", self.delay
+
+
+def _speak(a, *segments, settle=0.05):
+    """Feed segments into the assistant on a loop and let its LLM tasks finish."""
+    async def run():
+        for s in segments:
+            a.on_segment(s)
+        await asyncio.sleep(settle)
+
+    asyncio.run(run())
+
+
+def _urdu(source="Participant", text="آپ کیسے ہیں", t_end=1.0, lang="ur"):
+    s = seg(source, text, t_end)
+    s.lang = lang
+    return s
+
+
+def _transliterating(tmp_path, monkeypatch, llm=None, langs=("ur",)):
+    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
+    a.llm = llm or RecordingLLM()
+    a.proactive = False
+    monkeypatch.setattr(config, "TRANSLITERATE", list(langs))
+    return a, events
+
+
+def test_a_transliterate_language_segment_gets_a_transliteration_event(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch)
+    s = _urdu()
+    _speak(a, s)
+    assert [e for e in events if e["type"] == "transliteration"] == [
+        {"type": "transliteration", "id": s.id, "source": "Participant", "text": "Roman آپ کیسے ہیں",
+         "engine": "ollama", "ms": 0}]
+
+
+@pytest.mark.parametrize("langs, lang", [(("ur",), "en"), ((), "ur")])
+def test_other_languages_or_an_empty_setting_make_no_transliteration_call(langs, lang, tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch, langs=langs)
+    _speak(a, _urdu(lang=lang), _urdu(source="User", lang=lang, t_end=20.0))
+    assert a.llm.calls == [] and not [e for e in events if e["type"] == "transliteration"]
+
+
+def test_transliteration_prompt_keeps_the_language_latin_words_names_and_numbers(tmp_path, monkeypatch):
+    a, _ = _transliterating(tmp_path, monkeypatch)
+    _speak(a, _urdu(text="میرا meeting کل 3 بجے Ahmed کے ساتھ ہے"))
+    [(system, prompt)] = a.llm.calls
+    assert prompt == "میرا meeting کل 3 بجے Ahmed کے ساتھ ہے"
+    assert "'ur'" in system and "Latin script" in system and "Do not translate" in system
+    assert "already in Latin script unchanged" in system and "names and numbers intact" in system
+
+
+def test_the_transcript_context_keeps_the_original_script(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch)
+    prompts = []
+
+    async def generate_json(system, prompt):
+        prompts.append(prompt)
+        return {"trigger": "None", "suggestions": []}, "ollama", 0.1
+
+    a.llm.generate_json = generate_json
+    a.kb = SimpleNamespace(context=lambda q: "")
+    _speak(a, _urdu())
+    assert any(e["type"] == "transliteration" for e in events)
+    asyncio.run(a._run_proactive())
+    assert "[Participant] آپ کیسے ہیں" in prompts[0] and "Roman" not in prompts[0]
+
+
+def test_transliteration_shares_the_translation_queue_and_skips_stale_lines(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.2))
+    a.translate = True
+    monkeypatch.setattr(config, "TRANSLATE_MAX_WAIT_S", 0.3)
+    _speak(a, _urdu(text="ایک"), _urdu(text="دو", t_end=10.0), settle=0.8)
+    # one queue: transliteration "ایک" runs at once, its translation waits 0.2 s, both of "دو" 0.4 s+
+    assert [prompt for _, prompt in a.llm.calls] == ["ایک", "ایک"]
+    assert [(e["type"], e["text"]) for e in events if e["type"] in ("translation", "transliteration")] == [
+        ("transliteration", "Roman ایک"), ("translation", "Roman ایک")]
+
+
+def test_a_segment_retracted_as_echo_gets_no_transliteration(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1))
+    mic = _urdu(source="User", text="آپ کیسے ہیں میرے دوست", t_end=10.0)
+    loopback = _urdu(text="آپ کیسے ہیں میرے دوست", t_end=10.3)
+    _speak(a, mic, loopback, settle=0.4)
+    assert {"type": "retract", "id": mic.id} in events
+    assert [e["id"] for e in events if e["type"] == "transliteration"] == [loopback.id]
+
+
+def test_a_failed_transliteration_emits_one_error_and_no_event(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch, RecordingLLM(error=RuntimeError("quota")))
+    s = _urdu()
+    _speak(a, s)
+    assert [e for e in events if e["type"] == "error"] == [{"type": "error", "text": "Transliteration: quota"}]
+    assert [e["type"] for e in events] == ["segment", "error"]
+
+
+def test_a_reloaded_window_replays_transliterations():
+    from copilot.server import Hub
+
+    hub = Hub()
+    hub.publish({"type": "segment", "id": 1, "source": "Participant", "text": "آپ کیسے ہیں"})
+    hub.publish({"type": "transliteration", "id": 1, "source": "Participant", "text": "Aap kaise hain"})
+    assert [e["type"] for e in hub.history] == ["segment", "transliteration"]

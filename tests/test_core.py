@@ -566,7 +566,16 @@ def _recording(a, events, tmp_path, monkeypatch):
     return a, events
 
 
-def test_meeting_record_is_saved_on_stop(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lang, lines", [
+    ("en", ["## Summary", "(none, the conversation was too short)", "## Facts", "(none yet)",
+            "## Suggestions and answers", "Question: What now?", "## Transcript",
+            "**Participant:** Was kostet die Website?", "**You:** Ab 999 Euro."]),
+    ("de", ["## Zusammenfassung", "(keine, das Gespräch war zu kurz)", "## Fakten", "(noch keine)",
+            "## Vorschläge und Antworten", "Frage: What now?", "## Transkript",
+            "**Teilnehmer:** Was kostet die Website?", "**Du:** Ab 999 Euro."]),
+])
+def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_path, monkeypatch, lang, lines):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
     a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
 
     async def run():
@@ -575,13 +584,14 @@ def test_meeting_record_is_saved_on_stop(tmp_path, monkeypatch):
         a.on_segment(seg("User", "Ab 999 Euro.", 3.0))
         a._card({"type": "suggestion", "trigger": "Preisfrage", "ts": 0,
                  "suggestions": [{"text": "Das hängt vom Umfang ab."}]})
+        a._card({"type": "answer", "query": "What now?", "ts": 0, "suggestions": [{"text": "Wait."}]})
         await a.stop_meeting()
 
     asyncio.run(run())
     [record] = (tmp_path / "meetings").iterdir()
     text = record.read_text(encoding="utf-8")
-    assert "**Teilnehmer:** Was kostet die Website?" in text and "**Du:** Ab 999 Euro." in text
-    assert "Preisfrage" in text and "Das hängt vom Umfang ab." in text
+    for line in lines + ["Preisfrage", "Das hängt vom Umfang ab."]:  # LLM-written text stays as written
+        assert line in text
     assert events[-1] == {"type": "saved", "path": str(record)}
 
 
@@ -912,6 +922,7 @@ def _transliterated_meeting(tmp_path, monkeypatch):
         return "Aap kaise hain"
 
     a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(reply=reply)), tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "de")  # the record's speaker labels
 
     async def run():
         a.start_meeting()
@@ -954,6 +965,7 @@ def test_a_cut_off_session_log_line_is_kept_and_the_transliteration_still_arrive
 
 def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, monkeypatch):
     a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1)), tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "de")  # the record's speaker labels
 
     async def run():
         a.start_meeting()

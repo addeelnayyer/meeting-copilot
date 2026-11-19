@@ -5,6 +5,7 @@ import time
 
 from . import config
 from .audio import USER
+from .strings import t
 
 
 def _turns(segments):
@@ -20,13 +21,14 @@ def _turns(segments):
 
 
 def _card(c):
-    head = f"Frage: {c['query']}" if c["type"] == "answer" else c.get("trigger", "")
+    head = f"{t('card.question')} {c['query']}" if c["type"] == "answer" else c.get("trigger", "")
     lines = [f"- **{time.strftime('%H:%M', time.localtime(c['ts']))} {head}**"]
     lines += [f"  - {s.get('text', '')}" for s in c.get("suggestions") or []]
     return "\n".join(lines)
 
 
 def render(segments, memory, facts, cards, started, ended):
+    """The record; the headings and labels follow UI_LANGUAGE, the LLM-written memory stays as written."""
     start, end = time.localtime(started), time.localtime(ended)
     return "\n".join([
         "---",
@@ -38,17 +40,17 @@ def render(segments, memory, facts, cards, started, ended):
         "---",
         f"# Meeting {time.strftime('%Y-%m-%d %H:%M', start)}",
         "",
-        "## Zusammenfassung",
-        memory.text or "(keine, das Gespräch war zu kurz)",
+        f"## {t('record.summary')}",
+        memory.text or t("record.no_summary"),
         "",
-        "## Fakten",
-        facts.render(),
+        f"## {t('facts.title')}",
+        facts.render(empty=t("none_yet")),
         "",
-        "## Vorschläge und Antworten",
-        "\n".join(_card(c) for c in cards) or "(keine)",
+        f"## {t('record.cards')}",
+        "\n".join(_card(c) for c in cards) or t("record.none"),
         "",
-        "## Transkript",
-        "\n\n".join(f"**{'Du' if source == USER else 'Teilnehmer'}:** {text}"
+        f"## {t('record.transcript')}",
+        "\n\n".join(f"**{t('who.user' if source == USER else 'who.participant')}:** {text}"
                     for source, text in _turns(segments)),
         "",
     ])

@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from copilot import config, strings
 
 
@@ -37,3 +39,29 @@ def test_hotkey_tooltips_show_the_configured_hotkey_in_the_ui_language(monkeypat
     assert strings.event()["strings"]["ask.placeholder"] == "Frage stellen (Strg+Alt+Leertaste) …"
     monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     assert strings.event()["strings"]["ask.placeholder"] == "Ask a question (Ctrl+Alt+Space) …"
+
+
+def _first_events_on_connect(n):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from copilot.assistant import Assistant
+    from copilot.server import Hub, create_app
+
+    hub = Hub()
+    hub.state["meeting"] = {"type": "meeting", "active": False, "mic": True, "error": ""}
+    window = SimpleNamespace(apply=lambda: True)
+    assistant = SimpleNamespace(presets=Assistant.presets)
+    with TestClient(create_app(hub, assistant, window)) as client, client.websocket_connect("/ws") as ws:
+        return [ws.receive_json() for _ in range(n)]
+
+
+@pytest.mark.parametrize("lang, start, stop", [("en", "Start meeting", "End meeting"),
+                                               ("de", "Meeting starten", "Meeting beenden")])
+def test_page_gets_its_strings_before_any_other_event(monkeypatch, lang, start, stop):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    first, *rest = _first_events_on_connect(3)
+    assert first["type"] == "strings" and first["lang"] == lang
+    assert (first["strings"]["meeting.start"], first["strings"]["meeting.stop"]) == (start, stop)
+    assert "strings" not in [ev["type"] for ev in rest]

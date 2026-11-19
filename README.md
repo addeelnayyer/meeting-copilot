@@ -9,6 +9,8 @@ A local, real-time AI meeting assistant for Windows, Linux and macOS. It capture
 
 Speech recognition, the knowledge base and the fallback LLM all run locally. Only the prompts sent to the cloud AI you choose (if any) leave your machine.
 
+> **Upgrading with a German window?** The window is now English by default. Add `UI_LANGUAGE=de` to your `.env` to keep the German buttons, notes, presets and meeting record (see [Languages](#languages) and the [changelog](CHANGELOG.md)).
+
 ## Features
 
 - **Dual-stream capture** (mic + system audio: WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux, BlackHole on macOS), Silero VAD, 1.5-2.5 s speech chunks
@@ -145,11 +147,14 @@ LANGUAGES=ar,en           # Arabic speaker; English segments are translated into
 WHISPER_LANGUAGE=fr       # only French: skips detection, a little faster
 REPLY_LANGUAGE=en         # force English suggestions and memory (by default: German, or the interviewer's language)
 TRANSLITERATE=ur          # show Urdu lines in Roman Urdu
+UI_LANGUAGE=de            # German window (default: en)
 ```
 
 `TRANSLITERATE` (comma-separated, empty by default) lists languages whose lines you would rather read in Latin script. Such a line appears at once in its own script and is replaced in place by its transliteration (for Urdu: Roman Urdu) when the LLM returns it; English words, names and numbers stay as they are. It uses the same LLM and the same one-at-a-time queue as translation, and the two are independent: with both on, a line shows both. The transcript the LLM, facts and memory work with keeps the original script.
 
-The suggestion prompts are written for German client calls and German/English interviews; the window labels are German. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
+`UI_LANGUAGE` (`en` by default, or `de`) sets the language of everything the copilot itself writes for you: the window's buttons, tooltips and hints, the status and error notes (for example that Ollama isn't running), the preset buttons and the questions they send, and the meeting record's headings. An unknown value falls back to English with a hint in the console. It does not change the suggestions (`REPLY_LANGUAGE`), the meeting memory or the transcript, so an English window can show suggestions in any language. The window title stays "Meeting Copilot" in every language.
+
+The suggestion prompts are written for German client calls and German/English interviews. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 
 ## Run
 
@@ -157,7 +162,7 @@ The suggestion prompts are written for German client calls and German/English in
 uv run python -m copilot
 ```
 
-This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not listen until you click **Meeting starten**. Each meeting gets a fresh transcript and memory (the facts sheet is kept), and no audio device is opened while no meeting runs. **Mikro an/aus** mutes only your microphone; the participants are still transcribed. The window uses Chrome, Edge, Brave or Chromium (otherwise the default browser). It stays on top of the call by default: the pin button in the header (`Ctrl+Alt+O`) toggles that, and the slider next to it sets the opacity (40-100 %). Both are remembered in `settings.json`. When you stop a meeting (or quit during one), it is saved as `meetings/Meeting <date> <time>.md`: final summary, facts, every suggestion and answer, and the full transcript. The document button in the header opens the folder. Set `MEETINGS_DIR` in `.env` to collect them somewhere else, e.g. in your Obsidian vault. Options:
+This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not listen until you click **Start meeting**. Each meeting gets a fresh transcript and memory (the facts sheet is kept), and no audio device is opened while no meeting runs. **Mic on/off** mutes only your microphone; the participants are still transcribed. The window uses Chrome, Edge, Brave or Chromium (otherwise the default browser). It stays on top of the call by default: the pin button in the header (`Ctrl+Alt+O`) toggles that, and the slider next to it sets the opacity (40-100 %). Both are remembered in `settings.json`. When you stop a meeting (or quit during one), it is saved as `meetings/Meeting <date> <time>.md`: final summary, facts, every suggestion and answer, and the full transcript. The document button in the header opens the folder. Set `MEETINGS_DIR` in `.env` to collect them somewhere else, e.g. in your Obsidian vault. Options:
 
 | Flag | Effect |
 | --- | --- |
@@ -181,8 +186,8 @@ This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not 
 | `Ctrl+Alt+M` | Mute/unmute your microphone (the participants are still heard) |
 | `Ctrl+Alt+O` | Keep the window on top, or not |
 
-The preset texts above are those of `UI_LANGUAGE=en`; the default, `UI_LANGUAGE=de`, sends the German
-questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
+The preset texts above are those of `UI_LANGUAGE=en`, the default; `UI_LANGUAGE=de` shows the German
+buttons and sends the German questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
 one hotkey each, and a label and question per UI language.
 
 ## How it works
@@ -202,7 +207,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
 - **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
-- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Gedächtnis" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
+- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Memory" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
 - **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting.
 

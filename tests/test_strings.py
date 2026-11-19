@@ -41,6 +41,11 @@ def test_hotkey_tooltips_show_the_configured_hotkey_in_the_ui_language(monkeypat
     assert strings.event()["strings"]["ask.placeholder"] == "Ask a question (Ctrl+Alt+Space) …"
 
 
+def test_window_is_english_by_default():
+    event = strings.event()
+    assert event["lang"] == "en" and event["strings"]["meeting.start"] == "Start meeting"
+
+
 def _first_events_on_connect(n):
     from types import SimpleNamespace
 

@@ -18,7 +18,6 @@ GERMAN_HEADINGS = """## Verlauf (what was discussed, in order)
 ## Offene Punkte & Einwände
 ## Stimmung & Prioritäten der Teilnehmer"""
 
-# The model translates them into the reply language when it is not English.
 ENGLISH_HEADINGS = """## Discussion (what was discussed, in order)
 ## Decisions & commitments
 ## Open points & objections

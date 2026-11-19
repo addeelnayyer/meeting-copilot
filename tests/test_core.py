@@ -230,16 +230,16 @@ def test_schema_is_closed_for_strict_providers():
 
 
 # --- memory --------------------------------------------------------------------------
-def test_memory_summarizes_only_new_segments(tmp_path):
-    from copilot import memory
+def _memory_assistant(tmp_path, reply=None):
+    """A fake assistant whose LLM records every memory call as (system, prompt)."""
     from copilot.memory import Memory
 
-    calls = []
-
     class FakeLLM:
+        calls = []
+
         async def generate(self, system, prompt):
-            calls.append(prompt)
-            return f"- Zusammenfassung {len(calls)}", "gemini", 0.5
+            self.calls.append((system, prompt))
+            return reply or f"- Zusammenfassung {len(self.calls)}", "gemini", 0.5
 
     class FakeAssistant:
         transcript = Transcript()
@@ -248,45 +248,37 @@ def test_memory_summarizes_only_new_segments(tmp_path):
         events = []
         emit = events.append
 
-    a = FakeAssistant()
+    return FakeAssistant()
+
+
+def _summarize_once(tmp_path, reply):
+    from copilot import memory
+
+    a = _memory_assistant(tmp_path, reply)
+    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
+    asyncio.run(memory.summarize(a))
+    return a.llm.calls[0][0], a
+
+
+def test_memory_summarizes_only_new_segments(tmp_path):
+    from copilot import memory
+
+    a = _memory_assistant(tmp_path)
+    prompts = lambda: [prompt for _, prompt in a.llm.calls]
     a.transcript.add(seg("Participant", "Kurz.", 1.0))
     asyncio.run(memory.summarize(a))
-    assert calls == []  # below MEMORY_MIN_WORDS
+    assert prompts() == []  # below MEMORY_MIN_WORDS
 
     a.transcript.add(seg("Participant", "Wir brauchen die Website bis Ende März " * 6, 5.0))
     asyncio.run(memory.summarize(a))
-    assert "Ende März" in calls[0] and a.memory.text == "- Zusammenfassung 1"
+    assert "Ende März" in prompts()[0] and a.memory.text == "- Zusammenfassung 1"
     assert (tmp_path / "s.memory.md").read_text(encoding="utf-8") == "- Zusammenfassung 1"
 
     a.transcript.add(seg("User", "Das bekommen wir hin, versprochen " * 8, 30.0))
     asyncio.run(memory.summarize(a))
-    assert "Ende März" not in calls[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
-    assert "- Zusammenfassung 1" in calls[1]  # previous memory is carried forward
+    assert "Ende März" not in prompts()[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
+    assert "- Zusammenfassung 1" in prompts()[1]  # previous memory is carried forward
     assert a.events[-1]["type"] == "memory"
-
-
-def _summarize_with_fake_llm(tmp_path, reply):
-    from copilot import memory
-    from copilot.memory import Memory
-
-    calls = []
-
-    class FakeLLM:
-        async def generate(self, system, prompt):
-            calls.append(system)
-            return reply, "gemini", 0.5
-
-    class FakeAssistant:
-        transcript = Transcript()
-        memory = Memory(tmp_path / "s.memory.md")
-        llm = FakeLLM()
-        events = []
-        emit = events.append
-
-    a = FakeAssistant()
-    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
-    asyncio.run(memory.summarize(a))
-    return calls[0], a
 
 
 def test_memory_follows_reply_language(tmp_path, monkeypatch):
@@ -294,7 +286,7 @@ def test_memory_follows_reply_language(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
     reply = "## Discussion\n- Website by the end of March"
-    system, a = _summarize_with_fake_llm(tmp_path, reply)
+    system, a = _summarize_once(tmp_path, reply)
     assert "'en'" in system and "German" not in system
     assert "## Discussion" in system and "## Decisions & commitments" in system and "## Verlauf" not in system
     # the panel and the meeting record show the memory as written
@@ -305,7 +297,7 @@ def test_memory_follows_reply_language(tmp_path, monkeypatch):
 
 def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
-    system, _ = _summarize_with_fake_llm(tmp_path, "- Zusammenfassung")
+    system, _ = _summarize_once(tmp_path, "- Zusammenfassung")
     assert "in German" in system
     for heading in ("## Verlauf", "## Entscheidungen & Zusagen", "## Offene Punkte & Einwände",
                     "## Stimmung & Prioritäten der Teilnehmer"):

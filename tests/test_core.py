@@ -557,6 +557,15 @@ def test_meeting_audio_error_is_reported_not_fatal(tmp_path, monkeypatch):
     assert events[-1] == {"type": "meeting", "active": False, "mic": True, "error": "'parec' not found"}
 
 
+def _recording(a, events, tmp_path, monkeypatch):
+    """The assistant with fake devices, saving its meeting records to a temporary folder."""
+    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
+    cap.sources = [cap.mic, cap.loopback]
+    a.open_capture = lambda: cap
+    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    return a, events
+
+
 @pytest.mark.parametrize("lang, lines", [
     ("en", ["## Summary", "(none, the conversation was too short)", "## Facts", "(none yet)",
             "## Suggestions and answers", "Question: What now?", "## Transcript",
@@ -567,10 +576,7 @@ def test_meeting_audio_error_is_reported_not_fatal(tmp_path, monkeypatch):
 ])
 def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_path, monkeypatch, lang, lines):
     monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
-    cap.sources = [cap.mic, cap.loopback]
-    a, events = _meeting_assistant(tmp_path, monkeypatch, lambda: cap)
-    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()
@@ -590,10 +596,7 @@ def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_pa
 
 
 def test_empty_meeting_writes_no_record(tmp_path, monkeypatch):
-    cap = SimpleNamespace(mic=FakeSource(), loopback=FakeSource())
-    cap.sources = [cap.mic, cap.loopback]
-    a, _ = _meeting_assistant(tmp_path, monkeypatch, lambda: cap)
-    monkeypatch.setattr(config, "MEETINGS_DIR", tmp_path / "meetings")
+    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
 
     async def run():
         a.start_meeting()
@@ -810,10 +813,15 @@ def _speak(a, *segments):
     async def run():
         for s in segments:
             a.on_segment(s)
-        while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
-            await asyncio.gather(*tasks)
+        await _drain()
 
     asyncio.run(run())
+
+
+async def _drain():
+    """Wait for the LLM tasks the assistant started."""
+    while tasks := asyncio.all_tasks() - {asyncio.current_task()}:
+        await asyncio.gather(*tasks)
 
 
 def _urdu(source="Participant", text="آپ کیسے ہیں", t_end=1.0, lang="ur"):
@@ -903,3 +911,68 @@ def test_a_reloaded_window_replays_transliterations():
     hub.publish({"type": "segment", "id": 1, "source": "Participant", "text": "آپ کیسے ہیں"})
     hub.publish({"type": "transliteration", "id": 1, "source": "Participant", "text": "Aap kaise hain"})
     assert [e["type"] for e in hub.history] == ["segment", "transliteration"]
+
+
+def _transliterated_meeting(tmp_path, monkeypatch):
+    """A meeting with an Urdu line (transliterated), a German line (not in TRANSLITERATE) and an
+    Urdu line whose transliteration failed, started and stopped through the assistant."""
+    def reply(prompt):
+        if prompt != "آپ کیسے ہیں":
+            raise RuntimeError("quota")
+        return "Aap kaise hain"
+
+    a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(reply=reply)), tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "de")  # the record's speaker labels
+
+    async def run():
+        a.start_meeting()
+        for s in (_urdu(), seg("User", "Guten Tag.", 3.0), _urdu(text="ٹھیک ہوں", t_end=6.0)):
+            a.on_segment(s)
+        await _drain()
+        await a.stop_meeting()  # too few words for a memory call
+
+    asyncio.run(run())
+    return a
+
+
+def test_the_meeting_record_shows_the_transliteration_and_the_original_elsewhere(tmp_path, monkeypatch):
+    _transliterated_meeting(tmp_path, monkeypatch)
+    [record] = (tmp_path / "meetings").iterdir()
+    text = record.read_text(encoding="utf-8")
+    assert "**Teilnehmer:** Aap kaise hain" in text and "آپ کیسے ہیں" not in text
+    assert "**Du:** Guten Tag." in text and "**Teilnehmer:** ٹھیک ہوں" in text
+
+
+def test_the_session_log_keeps_the_original_and_adds_the_transliteration(tmp_path, monkeypatch):
+    a = _transliterated_meeting(tmp_path, monkeypatch)
+    lines = a.transcript.session_path.read_text(encoding="utf-8").splitlines()
+    entries = [(e["text"], e.get("transliteration")) for e in map(json.loads, lines)]
+    assert entries == [("آپ کیسے ہیں", "Aap kaise hain"), ("Guten Tag.", None), ("ٹھیک ہوں", None)]
+
+
+def test_a_cut_off_session_log_line_is_kept_and_the_transliteration_still_arrives(tmp_path, monkeypatch):
+    a, events = _transliterating(tmp_path, monkeypatch)
+    a.start_meeting()
+    s = _urdu()
+    a.transcript.add(s)
+    with open(a.transcript.session_path, "a", encoding="utf-8") as f:
+        f.write('{"source": "Partic\n')
+    asyncio.run(a._transliterate(s))
+    lines = a.transcript.session_path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["transliteration"] == "Roman آپ کیسے ہیں" and lines[1] == '{"source": "Partic'
+    assert events[-1]["type"] == "transliteration"
+
+
+def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, monkeypatch):
+    a, _ = _recording(*_transliterating(tmp_path, monkeypatch, RecordingLLM(delay=0.1)), tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "de")  # the record's speaker labels
+
+    async def run():
+        a.start_meeting()
+        a.on_segment(_urdu())
+        await asyncio.sleep(0)  # the transliteration call has started
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    [record] = (tmp_path / "meetings").iterdir()
+    assert "**Teilnehmer:** Roman آپ کیسے ہیں" in record.read_text(encoding="utf-8")

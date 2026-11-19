@@ -29,6 +29,7 @@ class Segment:
     latency: float = 0.0
     ts: float = field(default_factory=time.time)
     retracted: bool = False  # pulled back out of the transcript as an echo
+    transliteration: str = ""  # Latin-script rewrite for the window and the record, never sent to the LLM
     id: int = 0
 
 

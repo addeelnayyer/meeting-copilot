@@ -9,13 +9,14 @@ from .strings import t
 
 
 def _turns(segments):
-    """Consecutive segments of one speaker become one paragraph."""
+    """Consecutive segments of one speaker become one paragraph, each line as the window showed it."""
     turns = []
     for s in segments:
+        text = s.transliteration or s.text
         if turns and turns[-1][0] == s.source:
-            turns[-1][1].append(s.text)
+            turns[-1][1].append(text)
         else:
-            turns.append((s.source, [s.text]))
+            turns.append((s.source, [text]))
     return [(source, " ".join(texts)) for source, texts in turns]
 
 

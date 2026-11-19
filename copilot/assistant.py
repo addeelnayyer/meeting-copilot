@@ -68,6 +68,7 @@ class Assistant:
         self.proactive = True
         self.translate = False
         self._one_at_a_time = asyncio.Lock()  # translations and transliterations, one at a time
+        self._transliterations = set()  # this meeting's running ones, awaited by the record
         self.engine = "-"
         self._timer = None
         self._pending_since = None
@@ -91,6 +92,7 @@ class Assistant:
         self.transcript = Transcript(session)
         self.memory = Memory(session.with_suffix(".memory.md"))
         self.cards = []
+        self._transliterations = set()
         self.started = time.time()
         self.emit({"type": "reset"})
         self.emit({"type": "memory", "text": self.memory.render()})
@@ -103,19 +105,20 @@ class Assistant:
         """Returns the task that saves the meeting record (awaited on shutdown)."""
         self.active = False
         self._apply_audio()
-        return asyncio.ensure_future(self._save(self.transcript, self.memory, self.cards, self.started))
+        return asyncio.ensure_future(self._save(self.transcript, self.memory, self.cards, self.started,
+                                                self._transliterations))
 
-    async def _save(self, transcript, memory, cards, started):
-        """Fold the last minutes into the memory, then write the meeting record. A new meeting
-        may already be running, so this works on the old meeting's objects."""
+    async def _save(self, transcript, memory, cards, started, transliterations):
+        """Fold the last minutes into the memory and let the queued transliterations land, then
+        write the meeting record. A new meeting may already be running, so this works on the old
+        meeting's objects."""
         current = lambda: self.transcript is transcript  # noqa: E731
         ended = time.time()
         meeting = SimpleNamespace(transcript=transcript, memory=memory, llm=self.llm,
                                   emit=lambda e: current() and self.emit(e))
-        try:
-            await asyncio.wait_for(summarize(meeting), 30)
-        except asyncio.TimeoutError:
-            pass  # save with the last memory
+        summary = asyncio.ensure_future(summarize(meeting))
+        await asyncio.wait({summary, *transliterations}, timeout=30)
+        summary.cancel()  # still running: save with the last memory
         path = export.write(transcript, memory, self.facts, cards, started, ended)
         if path:
             print(f"Saved:    {path}")
@@ -157,7 +160,9 @@ class Assistant:
         self.emit({"type": "segment", "id": seg.id, "source": seg.source, "text": seg.text,
                    "lang": seg.lang, "new_turn": new_turn, "stt_ms": round(seg.latency * 1000)})
         if seg.lang in config.TRANSLITERATE:
-            asyncio.ensure_future(self._transliterate(seg))
+            task = asyncio.ensure_future(self._transliterate(seg))
+            self._transliterations.add(task)
+            task.add_done_callback(self._transliterations.discard)
         if seg.source != PARTICIPANT:
             return
         if self.translate:
@@ -266,6 +271,7 @@ class Assistant:
     async def _transliterate(self, seg):
         result = await self._plain(seg, TRANSLITERATE_SYSTEM.format(lang=seg.lang), "Transliteration")
         if result:
+            self.transcript.transliterate(seg, result["text"])
             self.emit({"type": "transliteration", "id": seg.id, "source": seg.source, **result})
 
     async def _plain(self, seg, system, label):

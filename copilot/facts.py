@@ -53,10 +53,10 @@ class Facts:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.path)
 
-    def render(self):
+    def render(self, empty="(noch keine)"):
         lines = []
         for k, v in self.data.items():
             if v in ("", [], None):
                 continue
             lines.append(f"- {k}: {', '.join(map(str, v)) if isinstance(v, list) else v}")
-        return "\n".join(lines) or "(noch keine)"
+        return "\n".join(lines) or empty

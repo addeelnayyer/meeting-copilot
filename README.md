@@ -31,12 +31,12 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 - Windows 10/11, Linux (PulseAudio or PipeWire) or macOS 12+
 - **Recommended:** an NVIDIA GPU (tested on an RTX 4060 Laptop, 8 GB) or an Apple Silicon Mac with [Homebrew](https://brew.sh). Otherwise speech recognition runs on the CPU (see [Speech recognition](#speech-recognition))
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 and all dependencies, including the CUDA libraries on Windows)
-- [Ollama](https://ollama.com) with a local LLM for the fallback. Any installed Ollama chat model works: every model you have pulled shows up in the AI menu in the window (or set `OLLAMA_MODEL`). The window warns when Ollama isn't running or the model is missing. Measured choices (`copilot.llm_bench` on an M4 Max, 48 GB; see [Tools](#tools)):
-  - **Small machines (8-16 GB), the default:** `granite4:7b-a1b-h`, about 6 GB loaded; suggestions take about 1.7 s (p95 1.9 s). It is weak in German answers and Roman Urdu: it misstates figures and drops numbers.
+- [Ollama](https://ollama.com) with a local LLM for the fallback. Every model you have pulled shows up in the AI menu in the window (or set `OLLAMA_MODEL`). The window warns when Ollama isn't running or the model is missing. Measured choices (`copilot.llm_bench` on an M4 Max, 48 GB; see [Tools](#tools)):
+  - **Small machines (8-16 GB), the default:** `granite4:7b-a1b-h`, about 6 GB loaded; suggestions take about 1.7 s (p95 1.9 s). It gets figures wrong in German answers and Roman Urdu.
     ```sh
     ollama pull granite4:7b-a1b-h
     ```
-  - **Large machines (48 GB or more), recommended:** `gemma4:26b`, about 23 GB loaded (`ollama ps` under-reports it). The only tested model with natural Roman Urdu that keeps the numbers; suggestions take about 2.4 s (p95 3.1 s). Set `OLLAMA_MODEL=gemma4:26b` in `.env`.
+  - **Large machines (48 GB or more), recommended:** `gemma4:26b`, about 23 GB loaded. The only tested model with natural Roman Urdu that keeps the numbers; suggestions take about 2.4 s (p95 3.1 s).
     ```sh
     ollama pull gemma4:26b
     ```
@@ -223,7 +223,7 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
 uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine faster-whisper|whisperkit)
-uv run python -m copilot.llm_bench granite4:7b-a1b-h gemma4:26b   # local LLM latency, JSON validity and samples per Ollama model
+uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)

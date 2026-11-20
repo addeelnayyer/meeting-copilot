@@ -204,9 +204,9 @@ finish() {
 REPO="addeelnayyer/meeting-copilot"
 SPEC_ISSUE=14
 TASK_ISSUE=20
-# Smallest first; the largest needs the most free disk, so it runs last.
-MODELS=(granite4:7b-a1b-h qwen3.5:4b qwen3.5:9b gemma4:26b qwen3.5:35b-a3b)
-LARGE=" qwen3.5:9b gemma4:26b qwen3.5:35b-a3b "   # large-machine candidates
+# Smallest first. qwen3.5:35b-a3b was dropped: the four runs below were judged enough.
+MODELS=(granite4:7b-a1b-h qwen3.5:4b qwen3.5:9b gemma4:26b)
+LARGE=" qwen3.5:9b gemma4:26b "   # large-machine candidates (space-padded for matching)
 DEFAULT_MODEL="granite4:7b-a1b-h"                  # shipped default, kept installed
 DEFAULT_ALT="qwen3.5:4b"                           # challenger on the German lines
 SUGG_P95_MAX=3000; TRANSLIT_P95_MAX=1500           # pass bar, ms
@@ -353,6 +353,7 @@ write_comment() {
     printf '`%s`\n\n' "$(grep -m1 '^Ollama ' "$(_out "$DEFAULT_MODEL")" 2>/dev/null || echo "Ollama $OLLAMA_VERSION")"
     printf 'Pass bar: valid JSON on every suggestion call, suggestion p95 <= %s ms, transliteration p95 <= %s ms, Roman Urdu judged readable by a native reader.\n\n' \
       "$SUGG_P95_MAX" "$TRANSLIT_P95_MAX"
+    printf 'Not benchmarked: `qwen3.5:35b-a3b` (22.1 GB, above the ~20 GB budget for a large machine); the four runs below were judged enough to decide.\n\n'
     printf '| Model | Disk | Loaded | Suggestion p50/p95 ms | Translation | Transliteration | German | Valid JSON (sugg., German) | Errors | Pass |\n'
     printf '|---|---|---|---|---|---|---|---|---|---|\n'
     for m in "${MODELS[@]}"; do
@@ -395,7 +396,7 @@ write_comment() {
 
 run_wizard() {
 
-TOTAL_STAGES=10
+TOTAL_STAGES=9
 cd "$(dirname "$0")/.."
 mkdir -p "$RESULTS"
 
@@ -409,7 +410,7 @@ behind=$(git rev-list --count HEAD..origin/main)
 if (( behind > 0 )); then
   say "This checkout is $behind commit(s) behind origin/main."
   git status --short | sed 's/^/  /'
-  if confirm "Fast-forward main to origin/main (local edits are kept)?"; then git pull --ff-only origin main
+  if confirm "Fast-forward main to origin/main (local edits are kept)?"; then git merge --ff-only origin/main   # not git pull: it fails with pull.rebase=true
   else warn "Without it the benchmark may be missing."; fi
 fi
 [[ -f copilot/llm_bench.py ]] || { warn "copilot/llm_bench.py is missing; update the checkout first."; exit 1; }
@@ -441,7 +442,7 @@ if [[ -n "$loaded" ]]; then
 fi
 pause "Press Enter when the machine is quiet"
 
-# ── 3-7 ───────────────────────────────────────────────────────────────────
+# ── 3-6 ───────────────────────────────────────────────────────────────────
 for m in "${MODELS[@]}"; do
   stage "Benchmark $m"
   [[ "$m" == "$DEFAULT_MODEL" ]] && keep=1 || keep=0
@@ -501,7 +502,10 @@ ask REC_DEFAULT_WHY "Reason (Enter keeps the one above):"
 REC_DEFAULT_WHY=${REC_DEFAULT_WHY:-$why}
 write_comment
 say "Draft: $RESULTS/comment.md ($(wc -c < "$RESULTS/comment.md" | tr -d ' ') characters; GitHub allows 65536)."
-if confirm "Open it in ${VISUAL:-${EDITOR:-nano}} to review and edit?"; then "${VISUAL:-${EDITOR:-nano}}" "$RESULTS/comment.md"; fi
+if confirm "Open it in ${VISUAL:-${EDITOR:-nano}} to review and edit?"; then
+  read -r -a editor <<<"${VISUAL:-${EDITOR:-nano}}"   # e.g. "code --wait": a command plus flags
+  "${editor[@]}" "$RESULTS/comment.md"
+fi
 if confirm "Post it as a public comment on $REPO#$SPEC_ISSUE?"; then
   url=$(gh issue comment "$SPEC_ISSUE" --repo "$REPO" --body-file "$RESULTS/comment.md")
   say "Posted: $url"

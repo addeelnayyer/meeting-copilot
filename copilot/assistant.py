@@ -19,7 +19,7 @@ ASK_ADDENDUM = """
 # Push-to-Ask
 The user has asked you an explicit question (see [USER QUESTION]). Answer exactly that question,
 grounded in the transcript, facts and knowledge. Keep the same JSON format: put your answer(s) in
-"suggestions" (1-2 items, each 1-2 sentences, in German unless the question is in English) and set
+"suggestions" (1-2 items, each 1-2 sentences, in the language the rules above ask for) and set
 "trigger" to a short label for the question.
 """
 
@@ -33,8 +33,22 @@ TRANSLITERATE_SYSTEM = (
     "English and other words already in Latin script unchanged, and keep names and numbers intact. "
     "Output only the rewritten text, no quotes, no comments."
 )
-REPLY_LANGUAGE_RULE = "\n# Language\nWrite every suggestion in the language with the ISO 639-1 code '{lang}'.\n"
-PROACTIVE_INSTRUCTION = "\n\nReagiere auf den letzten [Participant]-Beitrag."
+REPLY_LANGUAGE_RULE = (
+    "\n# Language\nWrite every suggestion, answer, trigger and fact in the language with the ISO 639-1 "
+    "code '{lang}'. This overrides every other language instruction above (e.g. \"German\"), whatever "
+    "language the participants speak.\n"
+)
+REPLY_LANGUAGE_REMINDER = "\n\nReply in the language with the ISO 639-1 code '{lang}'."
+PROACTIVE_INSTRUCTION = "\n\nRespond to the latest [Participant] turn."
+
+
+def reply_reminder():
+    """The reply-language rule repeated at the end of the user prompt, where small local models heed it."""
+    return REPLY_LANGUAGE_REMINDER.format(lang=config.REPLY_LANGUAGE) if config.REPLY_LANGUAGE else ""
+
+
+def proactive_instruction():
+    return PROACTIVE_INSTRUCTION + reply_reminder()
 
 
 def suggestion_system(addendum=""):
@@ -216,7 +230,7 @@ class Assistant:
         latest = self._last_participant_text()
         if not latest:
             return
-        prompt = await self._context(latest) + PROACTIVE_INSTRUCTION
+        prompt = await self._context(latest) + proactive_instruction()
         try:
             result, engine, secs = await self.llm.generate_json(self.system, prompt)
         except Exception as e:  # a timeout's message is empty
@@ -243,7 +257,7 @@ class Assistant:
         if not query:
             return
         self.emit({"type": "asking", "query": query})
-        prompt = (await self._context(f"{query} {self._last_participant_text()}")
+        prompt = (await self._context(f"{query} {self._last_participant_text()}") + reply_reminder()
                   + f"\n\n[USER QUESTION]\n{query}")
         try:
             result, engine, secs = await self.llm.generate_json(self.ask_system,

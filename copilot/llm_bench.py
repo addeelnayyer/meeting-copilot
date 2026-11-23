@@ -22,10 +22,10 @@ import numpy as np
 
 from . import config
 from .assistant import (
-    PROACTIVE_INSTRUCTION,
     TRANSLATE_SYSTEM,
     TRANSLITERATE_SYSTEM,
     meeting_context,
+    proactive_instruction,
     suggestion_system,
     translation_target,
 )
@@ -100,7 +100,7 @@ def workload():
                 calls.append(Call("transliteration", label, TRANSLITERATE_SYSTEM.format(lang=line["lang"]), line["text"]))
             if line["source"] != PARTICIPANT:
                 continue
-            prompt = meeting_context(facts, memory, meeting["knowledge"], transcript) + PROACTIVE_INSTRUCTION
+            prompt = meeting_context(facts, memory, meeting["knowledge"], transcript) + proactive_instruction()
             calls.append(Call(meeting["call"], label, system, prompt))
             target = translation_target(line["lang"])
             calls.append(Call("translation", f"{label} -> {target}", TRANSLATE_SYSTEM.format(target=target), line["text"]))

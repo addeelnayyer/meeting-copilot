@@ -326,6 +326,16 @@ def test_memory_follows_reply_language(tmp_path, monkeypatch):
     assert reply in record
 
 
+def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
+    from copilot.assistant import proactive_instruction, reply_reminder, suggestion_system
+
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
+    assert "overrides every other language instruction" in suggestion_system().split("# Language")[-1]
+    assert proactive_instruction().endswith("code 'en'.") and "'en'" in reply_reminder()
+    monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
+    assert reply_reminder() == "" and "# Language" not in suggestion_system()
+
+
 def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
     system, _ = _summarize_once(tmp_path, "- Zusammenfassung")

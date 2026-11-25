@@ -113,25 +113,25 @@ async def main(args):
             VadWorker(s, chunks, stop).start()
         return capture
 
-    llm = LLM()
-    assistant = Assistant(Transcript(), Facts(fresh=args.fresh_facts), KnowledgeBase(), llm, hub.publish,
-                          Memory(), open_capture)
-    assistant.set_mode(proactive=True, translate=False)
-    hub.publish(llm.describe())
-    primary = "Ollama" if llm.primary is llm.fallback else llm.primary.label  # the Ollama label is UI text
-    print(f"LLM:      {primary} ({llm.primary.model}), fallback Ollama ({llm.fallback.model})")
-    hub.publish({"type": "facts", "text": assistant.facts.render()})
-    hub.publish({"type": "stt", "ready": False})
-    hub.publish(assistant.meeting_state())
-    window = Window()
-    hub.publish(window.state())
-
-    stt = SttWorker(
+    stt = SttWorker(  # holds an STT engine only during a meeting
         chunks,
         on_segment=lambda seg: loop.call_soon_threadsafe(assistant.on_segment, seg),
         stop_event=stop,
         on_status=lambda status: loop.call_soon_threadsafe(hub.publish, {"type": "stt", **status}),
     )
+    llm = LLM()
+    assistant = Assistant(Transcript(), Facts(fresh=args.fresh_facts), KnowledgeBase(), llm, hub.publish,
+                          Memory(), open_capture, stt.open, stt.close)
+    assistant.set_mode(proactive=True, translate=False)
+    hub.publish(llm.describe())
+    primary = "Ollama" if llm.primary is llm.fallback else llm.primary.label  # the Ollama label is UI text
+    print(f"LLM:      {primary} ({llm.primary.model}), fallback Ollama ({llm.fallback.model})")
+    hub.publish({"type": "facts", "text": assistant.facts.render()})
+    hub.publish({"type": "stt", "ready": False, "idle": True})
+    hub.publish(assistant.meeting_state())
+    window = Window()
+    hub.publish(window.state())
+
     stt.start()
     if args.start:
         assistant.start_meeting()

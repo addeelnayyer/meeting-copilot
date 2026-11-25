@@ -497,6 +497,24 @@ def test_build_stt_engine_prints_the_choice_reason(monkeypatch, capsys):
     assert "WhisperKit is unavailable: x" in capsys.readouterr().out
 
 
+def test_faster_whisper_close_releases_its_stt_model(monkeypatch):
+    import gc
+    import weakref
+
+    import faster_whisper
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", Model)
+    engine = stt.FasterWhisperEngine()
+    model = weakref.ref(engine.model)
+    engine.close()
+    gc.collect()
+    assert model() is None
+
+
 def test_hotkeys_convert_to_pynput_format():
     assert to_pynput("ctrl+alt+1") == "<ctrl>+<alt>+1"
     assert to_pynput("ctrl+alt+space") == "<ctrl>+<alt>+<space>"
@@ -631,6 +649,50 @@ def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tm
 
     asyncio.run(run())
     assert events[-1] == {"type": "meeting", "active": True, "mic": False, "error": ""}
+
+
+class FakeSttWorker:
+    """Records whether the STT worker was told to hold an engine."""
+
+    def __init__(self):
+        self.calls = []
+
+    def open(self):
+        self.calls.append("open")
+
+    def close(self):
+        self.calls.append("close")
+
+
+def test_meeting_opens_the_stt_worker_only_while_running(tmp_path, monkeypatch):
+    worker = FakeSttWorker()
+    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.open_stt, a.close_stt = worker.open, worker.close
+
+    async def run():
+        assert worker.calls == []  # idle: no STT engine
+        a.start_meeting()
+        assert worker.calls[-1] == "open"
+        a.set_mic(False)  # muting keeps the participant transcribed
+        assert worker.calls[-1] == "open"
+        await a.stop_meeting()
+        assert worker.calls[-1] == "close"
+        a.start_meeting()
+        assert worker.calls[-1] == "open"
+        await a.stop_meeting()
+
+    asyncio.run(run())
+
+
+def test_an_audio_error_leaves_the_stt_worker_closed(tmp_path, monkeypatch):
+    def broken():
+        raise RuntimeError("'parec' not found")
+
+    worker = FakeSttWorker()
+    a, _ = _meeting_assistant(tmp_path, monkeypatch, broken)
+    a.open_stt, a.close_stt = worker.open, worker.close
+    a.start_meeting()
+    assert "open" not in worker.calls
 
 
 def test_meeting_audio_error_is_reported_not_fatal(tmp_path, monkeypatch):

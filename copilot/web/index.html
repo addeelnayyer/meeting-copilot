@@ -22,7 +22,6 @@
   .badge.cloud { background: #0f3d57; color: var(--confident); }
   #provider { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
     padding: 2px 4px; font: 600 12px "Segoe UI", sans-serif; max-width: 190px; }
-  .badge.ollama { background: #4a3500; color: var(--warn); }
   .badge.off { background: #3a1212; color: var(--err); }
   .meter { display: flex; align-items: center; gap: 4px; }
   .meter svg { width: 14px; height: 14px; }
@@ -166,7 +165,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const MAX_CARDS = 6;
 let ws, mode = { proactive: true, translate: false }, lastTurn = null;
-let meeting = { active: false, mic: true, error: "" }, kb = null, ollamaNote = "", saved = "";
+let meeting = { active: false, mic: true, error: "" }, kb = null, saved = "";
 let win = { on_top: true, opacity: 1 };
 const MIC_ICONS = { on: '<path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>', off: '<path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5.1 2.1"/><path d="M5 11a7 7 0 0 0 11.4 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18"/>' };
 // Reading time: a new proactive card waits until the current one has been shown for readMs,
@@ -315,7 +314,6 @@ function renderNotice() {
   if (meeting.error) items.push(`<div class="n err">${esc(t("audio.error", { error: meeting.error }))}</div>`);
   if (saved) items.push(`<div class="n info">${esc(t("saved.note", { name: saved.split(/[\\/]/).pop() }))}
     ${folder("meetings")}</div>`);
-  if (ollamaNote) items.push(`<div class="n warn">${esc(ollamaNote)}</div>`);
   if (kb && kb.files === 0) items.push(`<div class="n info">${esc(t("kb.empty"))}
     ${folder("notes")}</div>`);
   $("notice").innerHTML = items.join("");
@@ -346,23 +344,15 @@ const busy = (on) => document.querySelectorAll("#presets button").forEach((b) =>
 function providers(ev) {
   const sel = $("provider");
   sel.innerHTML = "";
-  let active = ev.active;
   for (const p of ev.list) {
     names[p.id] = p.label;
-    // Every installed Ollama model is its own entry ("ollama:<model>").
-    const models = p.id === "ollama" && ev.ollama_models.length ? ev.ollama_models : [null];
-    for (const m of models) {
-      const o = document.createElement("option");
-      o.value = m ? `ollama:${m}` : p.id;
-      o.disabled = !p.configured;
-      o.textContent = p.configured ? `${p.label} · ${m || p.model}` : t("provider.no_key", { label: p.label });
-      sel.append(o);
-      if (m && m === p.model && active === "ollama") active = o.value;
-    }
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.disabled = !p.configured;
+    o.textContent = p.configured ? `${p.label} · ${p.model}` : t("provider.no_key", { label: p.label });
+    sel.append(o);
   }
-  sel.value = active;
-  ollamaNote = ev.ollama_note;
-  renderNotice();
+  sel.value = ev.active;
 }
 
 const handlers = {
@@ -388,7 +378,7 @@ const handlers = {
   facts: (ev) => { $("facts").textContent = ev.text; },
   memory: (ev) => { $("memory").textContent = ev.text; },
   engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
-    e.className = "badge " + (ev.engine === "ollama" ? "ollama" : "cloud");
+    e.className = "badge cloud";
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
   stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : ev.idle ? "stt.idle" : "stt.loading");
     e.className = "badge" + (ev.ready || ev.idle ? "" : " off"); e.title = ev.engine || "";

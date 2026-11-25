@@ -1,18 +1,15 @@
-"""Primary cloud LLM (selectable: Gemini, Claude, OpenAI, Grok, any OpenAI-compatible URL)
-with local Ollama as fallback.
-
-If the primary hasn't answered within CLOUD_TIMEOUT_S, Ollama is started in parallel and
-the first finished answer wins. After repeated errors (or a quota error) a breaker skips
-the primary for a cooldown so offline mode costs no extra latency.
+"""The LLM: one cloud provider, selectable live (Gemini, Claude, OpenAI, Grok, any
+OpenAI-compatible URL). A request goes to the selected provider only. A failure sets `note`
+(shown in the window) and is raised to the caller; a 429 pauses the provider for its
+`retry_after()`, and a request during the pause fails at once.
 """
 
-import asyncio
 import json
 import re
 import time
 
 from . import config
-from .strings import t
+from .strings import UiError, t, ui_text
 from .providers import build_providers
 
 
@@ -73,143 +70,61 @@ def parse_json(text):
 class LLM:
     def __init__(self, providers=None):
         self.providers = {p.id: p for p in (providers or build_providers())}
-        self.fallback = self.providers["ollama"]
-        self._fails = 0
-        self._skip_until = 0.0
-        self.note = ""  # why the primary is currently skipped, shown in the UI
-        self.ollama_models = []  # installed, refreshed by check_ollama()
-        self.ollama_note = ""  # Ollama not running / model missing, shown in the UI
-        self._warming = None  # the fallback's warm-up task in this run, None while cold
-        self.primary = self.fallback
+        self.primary = None  # the selected provider; None while none is configured
+        self.note = ""  # why the last request failed or the next one will, shown in the UI
+        self._paused_until = 0.0  # after a 429
         self.set_primary(config.LLM_PROVIDER)
 
     def set_primary(self, provider_id):
-        """Switch the cloud engine at runtime. Unknown or unconfigured ids fall back to Ollama.
-        "ollama:<model>" also switches the Ollama model (used as the fallback as well)."""
-        provider_id, _, model = provider_id.partition(":")
-        if provider_id == "ollama" and model:
-            if model != self.fallback.model:
-                self._warming = None  # a different model is not loaded yet
-            self.fallback.model = model
-            self._update_ollama_note()
+        """Switch the provider at runtime. An unknown or unconfigured id keeps the current one
+        and leaves a note."""
         p = self.providers.get(provider_id)
         if p is None or not p.configured:
-            print(f"LLM provider '{provider_id}' is not configured (missing key/URL/model) - using Ollama only.")
-            p = self.fallback
-            self.note = t("llm.no_key", provider=provider_id) if provider_id != "ollama" else ""
-        else:
-            self.note = ""
-        self.primary = p
-        self._fails = 0
-        self._skip_until = 0.0
+            print(f"LLM provider '{provider_id}' is not configured (missing key/URL/model).")
+            self.note = t("llm.no_key", provider=provider_id)
+            return
+        self.primary, self.note, self._paused_until = p, "", 0.0
 
     def describe(self):
         """Provider list for the UI selector."""
-        return {"type": "providers", "active": self.primary.id,
+        return {"type": "providers", "active": self.primary.id if self.primary else "",
                 "list": [{"id": p.id, "label": p.label, "model": p.model, "configured": p.configured}
-                         for p in self.providers.values()],
-                "ollama_models": self.ollama_models, "ollama_note": self.ollama_note}
-
-    async def check_ollama(self):
-        """Refresh the installed Ollama models. Returns True when the UI needs an update."""
-        before = (self.ollama_models, self.ollama_note)
-        models = await self.fallback.installed()
-        self.ollama_models = models or []
-        self._update_ollama_note(running=models is not None)
-        return (self.ollama_models, self.ollama_note) != before
-
-    def _update_ollama_note(self, running=True):
-        m = self.fallback.model
-        if not running:
-            self.ollama_note = t("ollama.not_running")
-        elif self.ollama_models and m not in self.ollama_models:
-            self.ollama_note = t("ollama.model_missing", model=m)
-        elif not self.ollama_models:
-            self.ollama_note = t("ollama.no_model", model=m)
-        else:
-            self.ollama_note = ""
-
-    @property
-    def primary_available(self):
-        return self.primary is not self.fallback and time.monotonic() >= self._skip_until
-
-    def label(self, engine):
-        return self.providers[engine].label
+                         for p in self.providers.values()]}
 
     async def generate(self, system, prompt, schema=None):
-        """Returns (text, engine_id, seconds). schema set -> JSON mode.
-
-        The primary gets CLOUD_TIMEOUT_S on its own. If it hasn't answered by then, Ollama
-        starts in parallel and whichever finishes first wins, so a slightly slow cloud
-        answer is not thrown away. Only errors (not slowness) trip the breaker.
-        """
+        """Returns (text, provider_id, seconds). schema set -> JSON mode. Raises on failure."""
+        provider = self.primary
+        if provider is None:
+            self.note = t("llm.none")
+            raise UiError("llm.none")
+        wait = self._paused_until - time.monotonic()
+        if wait > 0:
+            self.note = t("llm.quota", provider=provider.label, minutes=_minutes(wait))
+            raise UiError("llm.quota", provider=provider.label, minutes=_minutes(wait))
         start = time.monotonic()
-        if not self.primary_available:
-            return await self._fallback(system, prompt, schema), self.fallback.id, time.monotonic() - start
+        try:
+            text = await provider.complete(system, prompt, schema)
+        except Exception as e:
+            if provider is self.primary:  # not switched while the request ran
+                self._failed(provider, e)
+            raise
+        if provider is self.primary:
+            self.note = ""
+        return text, provider.id, time.monotonic() - start
 
-        primary = self.primary
-        tasks = {asyncio.ensure_future(primary.complete(system, prompt, schema)): primary}
-        done, _ = await asyncio.wait(tasks, timeout=config.CLOUD_TIMEOUT_S)
-        if not done:
-            tasks[asyncio.ensure_future(self._fallback(system, prompt, schema))] = self.fallback
-
-        error = None
-        while tasks:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                provider = tasks.pop(task)
-                if task.exception() is None:
-                    for other in tasks:
-                        other.cancel()
-                    if provider is primary:
-                        self._fails = 0
-                        self.note = ""
-                    return task.result(), provider.id, time.monotonic() - start
-                error = task.exception()
-                if provider is primary:
-                    self._primary_failed(primary, error)
-                    if not tasks:  # failed before the hedge started
-                        tasks[asyncio.ensure_future(self._fallback(system, prompt, schema))] = self.fallback
-        raise error
-
-    def _primary_failed(self, provider, error):
-        if provider is not self.primary:  # switched while the request was running
-            return
-        self._fails += 1
+    def _failed(self, provider, error):
+        print(f"{provider.label} failed ({type(error).__name__}: {str(error)[:300]})")
         wait = provider.retry_after(error)
         if wait is not None:
-            self._skip_until = time.monotonic() + wait
-            self.note = t("llm.quota", provider=provider.label, minutes=max(1, wait // 60))
-        elif self._fails >= config.BREAKER_FAILS:
-            self._skip_until = time.monotonic() + config.BREAKER_COOLDOWN_S
-            self.note = t("llm.errors", provider=provider.label, seconds=config.BREAKER_COOLDOWN_S)
-        print(f"{provider.label} failed ({type(error).__name__}: {str(error)[:300]}) - using Ollama")
+            self._paused_until = time.monotonic() + wait
+            self.note = t("llm.quota", provider=provider.label, minutes=_minutes(wait))
+        else:
+            self.note = t("llm.failed", provider=provider.label, error=ui_text(error)[:200])
 
     async def generate_json(self, system, prompt, schema=SUGGESTION_SCHEMA):
         text, engine, secs = await self.generate(system, prompt, schema)
         return parse_json(text), engine, secs
 
-    async def warmup(self):
-        """Load the local LLM at startup or on a switch, but only when it is the primary LLM.
-        With a cloud primary it is loaded on the first request it gets (see `_fallback`)."""
-        if self.primary is self.fallback:
-            await self._warm_fallback()
 
-    async def _warm_fallback(self):
-        """The fallback's warm-up, run once per run and model; concurrent callers share it. A
-        failed one is reported and not kept, so the next caller tries again."""
-        if self._warming is None:
-            self._warming = asyncio.ensure_future(self.fallback.warmup())
-            self._warming.add_done_callback(self._forget_failed_warm_up)
-        try:
-            await asyncio.shield(self._warming)  # a cancelled hedge must not cancel the warm-up
-        except Exception as e:  # the request itself is still tried
-            print(f"Ollama warm-up failed ({type(e).__name__}: {e})")
-
-    def _forget_failed_warm_up(self, task):
-        if self._warming is task and (task.cancelled() or task.exception() is not None):
-            self._warming = None
-
-    async def _fallback(self, system, prompt, schema):
-        await self._warm_fallback()
-        return await self.fallback.complete(system, prompt, schema)
+def _minutes(seconds):
+    return max(1, round(seconds) // 60)

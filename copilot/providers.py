@@ -1,16 +1,13 @@
-"""Cloud and local LLM backends behind one interface: `await provider.complete(system, prompt, schema)`.
+"""Cloud LLM providers behind one interface: `await provider.complete(system, prompt, schema)`.
 
 - gemini  Google Gemini (google-genai SDK)
 - claude  Anthropic Claude (anthropic SDK)
 - openai / grok / custom  any OpenAI-compatible Chat Completions API (openai SDK with
           base_url): OpenAI, xAI Grok, OmniRoute, OpenRouter, LiteLLM, LM Studio, ...
-- ollama  local Ollama, always available, also the fallback for every other provider
 """
 
 import asyncio
 import re
-
-import httpx
 
 from . import config
 from .strings import t
@@ -35,7 +32,7 @@ class Provider:
             return None
         response = getattr(error, "response", None)
         header = response.headers.get("retry-after") if response is not None else None
-        return int(float(header)) if header else config.BREAKER_COOLDOWN_S
+        return int(float(header)) if header else config.RATE_LIMIT_PAUSE_S
 
 
 class GeminiProvider(Provider):
@@ -91,7 +88,7 @@ class GeminiProvider(Provider):
             return None
         # Google puts the wait into the error body, up to a day for the free tier.
         match = re.search(r"retryDelay['\"]?:\s*['\"](\d+)", str(error))
-        return int(match.group(1)) if match else config.BREAKER_COOLDOWN_S
+        return int(match.group(1)) if match else config.RATE_LIMIT_PAUSE_S
 
 
 # Server-side refusal fallback is available on these models (Claude API only).
@@ -107,7 +104,7 @@ class ClaudeProvider(Provider):
         if config.ANTHROPIC_API_KEY:
             import anthropic
 
-            # No SDK retries: the hedge/breaker in llm.py decides what happens on errors.
+            # No SDK retries: llm.py decides what happens on errors.
             self._client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=0)
 
     @property
@@ -184,61 +181,6 @@ class OpenAICompatProvider(Provider):
         return text
 
 
-class OllamaProvider(Provider):
-    id = "ollama"
-
-    @property
-    def label(self):
-        return t("ollama.label")
-
-    def __init__(self):
-        self.model = config.OLLAMA_MODEL
-        self._http = httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_S)
-
-    def _chat(self, **body):
-        """Every /api/chat request: thinking off (the fallback exists to be fast; models
-        without thinking ignore it) and the model kept loaded."""
-        return self._http.post(f"{config.OLLAMA_URL}/api/chat",
-                               json={"model": self.model, "think": False, "keep_alive": "30m", **body})
-
-    async def complete(self, system, prompt, schema=None):
-        body = {
-            "stream": False,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "options": {"temperature": 0.3},
-        }
-        if schema:
-            body["format"] = schema
-        r = await self._chat(**body)
-        r.raise_for_status()
-        return r.json()["message"]["content"]
-
-    async def warmup(self):
-        """Load the model into RAM so the first fallback isn't a cold start."""
-        try:
-            await self._chat(messages=[])
-        except httpx.HTTPError as e:
-            print(f"Ollama warmup failed: {e}")
-
-    async def version(self):
-        """The Ollama server version, e.g. "0.33.2"; None if Ollama is not running."""
-        try:
-            r = await self._http.get(f"{config.OLLAMA_URL}/api/version", timeout=3)
-            r.raise_for_status()
-        except httpx.HTTPError:
-            return None
-        return r.json().get("version")
-
-    async def installed(self):
-        """Names of the installed chat models (embedding models skipped); None if Ollama is not running."""
-        try:
-            r = await self._http.get(f"{config.OLLAMA_URL}/api/tags", timeout=3)
-            r.raise_for_status()
-        except httpx.HTTPError:
-            return None
-        return sorted(m["name"] for m in r.json().get("models", []) if "embed" not in m["name"])
-
-
 def build_providers():
     """All providers in UI order; unconfigured ones (no key) are listed but not selectable."""
     return [
@@ -248,5 +190,4 @@ def build_providers():
         OpenAICompatProvider("grok", "Grok", config.GROK_BASE_URL, config.XAI_API_KEY, config.GROK_MODEL),
         OpenAICompatProvider("custom", config.CUSTOM_LABEL, config.CUSTOM_BASE_URL, config.CUSTOM_API_KEY,
                              config.CUSTOM_MODEL, needs_key=False),
-        OllamaProvider(),
     ]

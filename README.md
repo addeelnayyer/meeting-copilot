@@ -7,7 +7,7 @@ A local, real-time AI meeting assistant for Windows, Linux and macOS. It capture
 
 <p align="center"><img src="docs/screenshot.webp" alt="Meeting Copilot window: suggestion cards, live transcript with translation, preset buttons" width="380"></p>
 
-Speech recognition, the knowledge base and the fallback LLM all run locally. Only the prompts sent to the cloud AI you choose (if any) leave your machine.
+Speech recognition and the knowledge base run locally. Only the prompts sent to the cloud AI you choose (if any) leave your machine.
 
 > **Upgrading with a German window?** The window is now English by default. Add `UI_LANGUAGE=de` to your `.env` to keep the German buttons, notes, presets and meeting record (see [Languages](#languages) and the [changelog](CHANGELOG.md)).
 
@@ -23,7 +23,7 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 - **Knowledge base (RAG)** over your own Markdown/JSON notes, plus keyword flashcards
 - **Facts sheet** (budgets, names, dates) extracted automatically and kept across meetings
 - **Meeting memory**: a rolling summary every 5 minutes, so the AI remembers the whole meeting and not just the last few sentences
-- **Bring your own AI**: Gemini, Claude, OpenAI, Grok, or any OpenAI-compatible URL (OmniRoute, OpenRouter, LiteLLM, LM Studio ...), switchable live in the window. **Local Ollama** races in after 2.5 s and takes over when offline or out of quota
+- **Bring your own AI**: Gemini, Claude, OpenAI, Grok, or any OpenAI-compatible URL (OmniRoute, OpenRouter, LiteLLM, LM Studio ...), switchable live in the window. No language model runs on your machine; only speech recognition is local
 - Two roles: client/sales calls (`PROMPT=system`) or job interviews and meetings at work (`PROMPT=interview`)
 
 ## Requirements
@@ -31,16 +31,7 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 - Windows 10/11, Linux (PulseAudio or PipeWire) or macOS 12+
 - **Recommended:** an NVIDIA GPU (tested on an RTX 4060 Laptop, 8 GB) or an Apple Silicon Mac with [Homebrew](https://brew.sh). Otherwise speech recognition runs on the CPU (see [Speech recognition](#speech-recognition))
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 and all dependencies, including the CUDA libraries on Windows)
-- [Ollama](https://ollama.com) with a local LLM for the fallback. Every model you have pulled shows up in the AI menu in the window (or set `OLLAMA_MODEL`). The window warns when Ollama isn't running or the model is missing. Measured choices (`copilot.llm_bench` on an M4 Max, 48 GB; see [Tools](#tools)):
-  - **Small machines (8-16 GB), the default:** `granite4:7b-a1b-h`, about 6 GB loaded; suggestions take about 1.7 s (p95 1.9 s). It gets figures wrong in German answers and Roman Urdu.
-    ```sh
-    ollama pull granite4:7b-a1b-h
-    ```
-  - **Large machines (48 GB or more), recommended:** `gemma4:26b`, about 23 GB loaded. The only tested model with natural Roman Urdu that keeps the numbers; suggestions take about 2.4 s (p95 3.1 s).
-    ```sh
-    ollama pull gemma4:26b
-    ```
-- An API key for at least one cloud AI (optional; without one everything runs on Ollama). A meeting makes hundreds of requests, so free tiers such as Gemini's (about 20 requests per day per model) are not enough.
+- An API key for at least one cloud AI (optional; without one the copilot only transcribes, and the window says that no LLM is configured). A meeting makes hundreds of requests, so free tiers such as Gemini's (about 20 requests per day per model) are not enough.
 - Chrome, Edge or Brave for the app window (otherwise the default browser opens)
 - **Headphones recommended.** With speakers the mic picks up the participants. The app suppresses obvious echoes, but headphones are cleaner.
 
@@ -60,7 +51,9 @@ curl -LsSf https://raw.githubusercontent.com/masrisystems/meeting-copilot/main/i
 
 The app goes to `~/meeting-copilot` (set `MEETING_COPILOT_DIR` to change that). From a cloned repo, run `./install.sh` or `install.ps1` inside it instead. Re-run the installer to update; your `.env`, notes and sessions are kept. `--uninstall` (`-Uninstall` on Windows) removes the icons.
 
-Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. Ollama is not installed for you (see [Requirements](#requirements)). On an Apple Silicon Mac the installer also runs `brew install whisperkit-cli` for the WhisperKit STT engine; without Homebrew it prints a hint and the copilot uses faster-whisper on the CPU.
+Earlier versions used [Ollama](https://ollama.com) as a local fallback. The copilot no longer uses it: if you installed Ollama only for the copilot, you can uninstall it, and remove any `OLLAMA_*` or `CLOUD_TIMEOUT` lines from your `.env` (they are ignored, with a hint in the console).
+
+Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. On an Apple Silicon Mac the installer also runs `brew install whisperkit-cli` for the WhisperKit STT engine; without Homebrew it prints a hint and the copilot uses faster-whisper on the CPU.
 
 ## Manual setup
 
@@ -82,7 +75,6 @@ Set the keys you have in `.env`. `LLM_PROVIDER` picks the engine at startup, and
 | `openai` | `OPENAI_API_KEY`, `OPENAI_MODEL` (`OPENAI_BASE_URL` for Azure/proxies) | `gpt-6-luna` |
 | `grok` | `XAI_API_KEY`, `GROK_MODEL` | `grok-4.7` |
 | `custom` | `CUSTOM_BASE_URL`, `CUSTOM_MODEL`, optional `CUSTOM_API_KEY`, `CUSTOM_LABEL` | any OpenAI-compatible endpoint |
-| `ollama` | `OLLAMA_MODEL` | local only, no cloud |
 
 Example for [OmniRoute](https://github.com/diegosouzapw/OmniRoute) or another gateway:
 ```ini
@@ -159,7 +151,7 @@ UI_LANGUAGE=de            # German window (default: en)
 
 `TRANSLITERATE` (comma-separated, empty by default) lists languages whose lines you would rather read in Latin script. Such a line appears at once in its own script and is replaced in place by its transliteration (for Urdu: Roman Urdu) when the LLM returns it; English words, names and numbers stay as they are. It uses the same LLM and the same one-at-a-time queue as translation, and the two are independent: with both on, a line shows both. The transcript the LLM, facts and memory work with keeps the original script. The saved meeting record shows the transliteration (the original for lines that got none), and the session log keeps the original with the transliteration added to its entry.
 
-`UI_LANGUAGE` (`en` by default, or `de`) sets the language of everything the copilot itself writes for you: the window's buttons, tooltips and hints, the status and error notes (for example that Ollama isn't running), the preset buttons and the questions they send, and the meeting record's headings. An unknown value falls back to English with a hint in the console. It does not change the suggestions (`REPLY_LANGUAGE`), the meeting memory or the transcript, so an English window can show suggestions in any language. The window title stays "Meeting Copilot" in every language.
+`UI_LANGUAGE` (`en` by default, or `de`) sets the language of everything the copilot itself writes for you: the window's buttons, tooltips and hints, the status and error notes (for example that no LLM is configured), the preset buttons and the questions they send, and the meeting record's headings. An unknown value falls back to English with a hint in the console. It does not change the suggestions (`REPLY_LANGUAGE`), the meeting memory or the transcript, so an English window can show suggestions in any language. The window title stays "Meeting Copilot" in every language.
 
 The suggestion prompts are written for German client calls and German/English interviews. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 
@@ -206,7 +198,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
                                                                                 │
                 facts.json + meeting memory (5 min) + knowledge base (RAG) + last 15 turns
                                                                                 │
-              Gemini | Claude | OpenAI | Grok | custom URL ──(> 2.5 s: race)── Ollama
+                       Gemini | Claude | OpenAI | Grok | custom URL
 ```
 
 - **Chunking:** a chunk ends at a pause once it is at least 1.5 s long, and is force-cut at 2.5 s at the quietest point. Short replies ("Ja.") are still sent once the speaker stops.
@@ -215,7 +207,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
 - **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Memory" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
-- **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off. Ollama loads its model into RAM only when it is needed: at startup or when you pick it in the window if it is the primary LLM, otherwise on the first request it gets after a slow or failing cloud call (that first fallback answer takes a few seconds longer).
+- **LLM:** every request goes to the provider picked in the window, and nothing answers in its place. A failed request is explained in the header (timeout, quota, missing key, refusal), and the next request tries again. On a rate-limit or quota error (429) the provider pauses for as long as it says (60 s when it doesn't), and requests during the pause fail at once with a note saying when it ends.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting. A transliterated segment's entry also carries its `transliteration`.
 
 The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.md` for interviews).
@@ -225,7 +217,6 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
 uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine, --reference, --requests: see below)
-uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)

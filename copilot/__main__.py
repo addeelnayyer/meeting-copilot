@@ -124,8 +124,9 @@ async def main(args):
                           Memory(), open_capture, stt.open, stt.close)
     assistant.set_mode(proactive=True, translate=False)
     hub.publish(llm.describe())
-    primary = "Ollama" if llm.primary is llm.fallback else llm.primary.label  # the Ollama label is UI text
-    print(f"LLM:      {primary} ({llm.primary.model}), fallback Ollama ({llm.fallback.model})")
+    print(f"LLM:      {f'{llm.primary.label} ({llm.primary.model})' if llm.primary else 'none configured'}")
+    if config.IGNORED_SETTINGS:
+        print(f"Ignored in .env: {', '.join(config.IGNORED_SETTINGS)} (the local LLM was removed; you can delete them)")
     hub.publish({"type": "facts", "text": assistant.facts.render()})
     hub.publish({"type": "stt", "ready": False, "idle": True})
     hub.publish(assistant.meeting_state())
@@ -141,17 +142,8 @@ async def main(args):
 
         hotkeys.register(loop, assistant, hub.publish, window)
 
-    asyncio.ensure_future(llm.warmup())
     asyncio.ensure_future(memory.run(assistant))
     asyncio.ensure_future(rag.watch(assistant.kb, hub.publish))
-
-    async def ollama_status():
-        while True:
-            if await llm.check_ollama():
-                hub.publish(llm.describe())
-            await asyncio.sleep(30)
-
-    asyncio.ensure_future(ollama_status())
 
     async def levels():
         while True:

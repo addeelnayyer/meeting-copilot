@@ -148,5 +148,4 @@ EOF
 fi
 
 # --- 5. Hints ---
-command -v ollama >/dev/null || printf '\nTip: install Ollama (https://ollama.com) for the offline fallback and pull a model, e.g.\n"ollama pull granite4:7b-a1b-h". Any other installed model can be picked in the window.\n'
 printf '\nDone. Put your notes as Markdown files in %s/knowledge_base,\nand AI keys and settings in %s/.env (both open from buttons in the window).\n' "$DIR" "$DIR"

@@ -307,7 +307,7 @@ class Assistant:
         A line retracted as an echo, or from a meeting that has ended, is skipped."""
         transcript, queued = self.transcript, time.monotonic()
         gone = lambda: seg.retracted or self.transcript is not transcript  # noqa: E731
-        # One at a time: a local model can't keep up with every line in parallel, and a pile-up
+        # One at a time: a provider may not keep up with every line in parallel, and a pile-up
         # made all of them time out. Lines that waited too long are skipped to catch up.
         async with self._one_at_a_time:
             if gone() or time.monotonic() - queued > config.PLAIN_MAX_WAIT_S:
@@ -338,7 +338,6 @@ class Assistant:
     def set_provider(self, provider_id):
         self.llm.set_primary(provider_id)
         self.emit(self.llm.describe())
-        asyncio.ensure_future(self.llm.warmup())  # loads the local LLM only when it is now the primary
 
     @staticmethod
     def _limit(suggestions):

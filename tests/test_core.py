@@ -6,12 +6,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from copilot import config
+from copilot import config, strings
 from copilot.facts import Facts
 import httpx
 
 from copilot.llm import LLM, SUGGESTION_SCHEMA, parse_json
 from copilot.providers import GeminiProvider, Provider
+from copilot.strings import UiError
 from copilot.rag import split_text
 from copilot.hotkeys import to_pynput, to_win32
 from copilot import stt
@@ -120,135 +121,82 @@ class FakeProvider(Provider):
     def __init__(self, id, delay=0.0, error=None, configured=True):
         self.id, self.label, self.model = id, id.title(), f"{id}-model"
         self.delay, self.error, self._configured = delay, error, configured
-        self.calls = []  # "warmup" and "complete", in the order they reached the provider
-        self.warmup_error = None  # raised by warmup()
+        self.calls = 0  # requests that reached this provider
 
     @property
     def configured(self):
         return self._configured
 
-    async def warmup(self):
-        self.calls.append("warmup")
-        if self.warmup_error:
-            raise self.warmup_error
-
     async def complete(self, system, prompt, schema=None):
-        self.calls.append("complete")
+        self.calls += 1
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
         return '{"trigger": "%s", "suggestions": [], "new_facts": []}' % self.id
 
 
-def _llm(monkeypatch, cloud_delay, ollama_delay, cloud_error=None, cloud=None):
-    monkeypatch.setattr(config, "CLOUD_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
-    cloud = cloud or GeminiProvider()  # real retry_after parsing for Gemini quota errors
-    fake = FakeProvider("claude", cloud_delay, cloud_error)
-    fake.retry_after = cloud.retry_after
-    return LLM([fake, FakeProvider("grok", configured=False), FakeProvider("ollama", ollama_delay)])
+def _llm(monkeypatch, error=None, primary="claude"):
+    """claude (selected, failing with `error`), grok (no key) and openai, all fakes."""
+    monkeypatch.setattr(config, "LLM_PROVIDER", primary)
+    fake = FakeProvider("claude", error=error)
+    fake.retry_after = GeminiProvider().retry_after  # real parsing of Gemini quota errors
+    return LLM([fake, FakeProvider("grok", configured=False), FakeProvider("openai")])
 
 
-def test_slow_cloud_still_wins_race_against_slower_ollama(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.15, ollama_delay=0.5)
+def test_the_selected_provider_answers(monkeypatch):
+    client = _llm(monkeypatch)
     res, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "claude" and res["trigger"] == "claude"
-    assert client.primary_available
+    assert engine == "claude" and res["trigger"] == "claude" and client.note == ""
 
 
-def test_ollama_wins_when_cloud_is_much_slower(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.05)
-    res, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "ollama" and res["trigger"] == "ollama"
-    assert client.primary_available  # slowness alone does not trip the breaker
-
-
-def test_cloud_errors_fall_back_and_open_breaker(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+def test_a_failing_provider_reaches_no_other_and_the_next_request_tries_again(monkeypatch):
+    client = _llm(monkeypatch, error=RuntimeError("503 overloaded"))
 
     async def run():
-        await client.generate_json("s", "p")
-        return await client.generate_json("s", "p")
-
-    res, engine, _ = asyncio.run(run())
-    assert engine == "ollama" and res["trigger"] == "ollama"
-    assert not client.primary_available
-
-
-def test_gemini_quota_429_skips_primary_for_retry_delay(monkeypatch):
-    err = RuntimeError("429 RESOURCE_EXHAUSTED {'retryDelay': '62535s'}")
-    err.code = 429
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=err)
-    _, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "ollama" and not client.primary_available
-    assert "1042 min" in client.note
-
-
-def test_cloud_primary_does_not_warm_the_local_llm(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    asyncio.run(client.warmup())
-    assert client.fallback.calls == []
-
-
-def test_local_primary_is_warmed_at_startup(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    client.set_primary("ollama")
-    asyncio.run(client.warmup())
-    assert client.fallback.calls == ["warmup"]
-
-
-def test_cloud_failure_warms_the_fallback_once_before_it_answers(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
-
-    async def run():
-        first = await client.generate_json("s", "p")  # the cloud fails, the fallback answers
-        await client.generate_json("s", "p")
-        await client.generate_json("s", "p")  # breaker open: straight to the fallback
-        return first
-
-    _, engine, _ = asyncio.run(run())
-    assert engine == "ollama"
-    assert client.fallback.calls == ["warmup", "complete", "complete", "complete"]
-
-
-def test_hedge_warms_the_fallback_once_for_concurrent_requests(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.0)
-
-    async def run():
-        return await asyncio.gather(client.generate_json("s", "p"), client.generate_json("s", "p"))
-
-    assert [engine for _, engine, _ in asyncio.run(run())] == ["ollama", "ollama"]
-    assert client.fallback.calls == ["warmup", "complete", "complete"]
-
-
-def test_a_failed_warm_up_is_not_kept_and_the_fallback_still_answers(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
-    client.fallback.warmup_error = ValueError("unexpected reply")  # not an httpx.HTTPError
-
-    async def run():
-        engines = [(await client.generate_json("s", "p"))[1] for _ in range(2)]
-        client.fallback.warmup_error = None
-        engines += [(await client.generate_json("s", "p"))[1] for _ in range(2)]
-        return engines
-
-    assert asyncio.run(run()) == ["ollama"] * 4
-    # Tried again on every request until one warm-up succeeds, then kept.
-    assert client.fallback.calls == ["warmup", "complete", "warmup", "complete", "warmup", "complete", "complete"]
-
-
-def test_a_failed_warm_up_of_the_local_primary_is_retried(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    client.set_primary("ollama")
-    client.fallback.warmup_error = ValueError("unexpected reply")
-
-    async def run():
-        await client.warmup()  # reported, not raised
-        client.fallback.warmup_error = None
-        await client.warmup()
-        await client.warmup()
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="503"):
+                await client.generate_json("s", "p")
 
     asyncio.run(run())
-    assert client.fallback.calls == ["warmup", "warmup"]
+    claude, _, openai = client.providers.values()
+    assert claude.calls == 2 and openai.calls == 0
+    assert "Claude" in client.note and "503" in client.note
+    claude.error = None
+    asyncio.run(client.generate_json("s", "p"))
+    assert client.note == ""
+
+
+def test_a_429_pauses_the_provider_for_its_retry_delay(monkeypatch):
+    err = RuntimeError("429 RESOURCE_EXHAUSTED {'retryDelay': '62535s'}")
+    err.code = 429
+    client = _llm(monkeypatch, error=err)
+
+    async def run():
+        with pytest.raises(RuntimeError, match="429"):
+            await client.generate_json("s", "p")
+        with pytest.raises(UiError) as paused:  # in the pause: fails at once
+            await client.generate_json("s", "p")
+        return paused.value
+
+    paused = asyncio.run(run())
+    assert client.providers["claude"].calls == 1
+    assert "1042 min" in client.note and "1042 min" in str(paused)
+
+
+def test_without_a_configured_provider_requests_fail_with_a_note(monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+    client = LLM([FakeProvider("claude", configured=False), FakeProvider("grok", configured=False)])
+    with pytest.raises(UiError) as e:
+        asyncio.run(client.generate("s", "p"))
+    assert str(e.value) == client.note == strings.t("llm.none")
+    assert client.describe()["active"] == ""
+
+
+def test_describe_lists_only_cloud_providers():
+    listed = LLM().describe()
+    assert [p["id"] for p in listed["list"]] == ["gemini", "claude", "openai", "grok", "custom"]
+    assert set(listed) == {"type", "active", "list"}
 
 
 def test_http_429_uses_retry_after_header():
@@ -262,14 +210,16 @@ def test_http_429_uses_retry_after_header():
 
 
 def test_switching_provider(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client = _llm(monkeypatch)
     assert client.primary.id == "claude"
-    client.set_primary("grok")  # no key -> stays usable via Ollama, with a note
-    assert client.primary.id == "ollama" and not client.primary_available and "grok" in client.note
-    client.set_primary("claude")
-    assert client.primary.id == "claude" and client.note == ""
+    client.set_primary("grok")  # no key: stays on claude, with a note
+    assert client.primary.id == "claude" and "grok" in client.note
+    client.set_primary("mistral")  # unknown
+    assert client.primary.id == "claude" and "mistral" in client.note
+    client.set_primary("openai")
+    assert client.primary.id == "openai" and client.note == ""
     listed = client.describe()
-    assert listed["active"] == "claude"
+    assert listed["active"] == "openai"
     assert [p["configured"] for p in listed["list"]] == [True, False, True]
 
 
@@ -299,36 +249,6 @@ def test_openai_compatible_downgrades_json_mode():
     p._client = type("C", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
     assert parse_json(asyncio.run(p.complete("s", "p", SUGGESTION_SCHEMA)))["trigger"] == "ok"
     assert calls == ["json_schema", "json_object", None] and p._json_mode == "prompt"
-
-
-def _ollama_recording(reply):
-    """An OllamaProvider whose HTTP client records each request body and answers with `reply`."""
-    from copilot.providers import OllamaProvider
-
-    p, sent = OllamaProvider(), []
-
-    def handle(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"message": {"role": "assistant", "content": reply}})
-
-    p._http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-    return p, sent
-
-
-@pytest.mark.parametrize("schema, reply", [
-    (SUGGESTION_SCHEMA, '{"trigger": "ok", "suggestions": [], "new_facts": []}'),
-    (None, "Hallo Welt"),
-])
-def test_ollama_chat_turns_thinking_off(schema, reply):
-    p, sent = _ollama_recording(reply)
-    assert asyncio.run(p.complete("s", "p", schema)) == reply
-    assert sent[0]["think"] is False and sent[0].get("format") == schema
-
-
-def test_ollama_warmup_turns_thinking_off():
-    p, sent = _ollama_recording("")
-    asyncio.run(p.warmup())
-    assert sent[0]["think"] is False and sent[0]["messages"] == []
 
 
 def test_schema_is_closed_for_strict_providers():
@@ -561,27 +481,6 @@ def test_hotkeys_convert_to_win32_modifiers_and_keys():
     assert to_win32("ctrl+alt+1") == (0x3, ord("1"))
 
 
-# --- ollama models -------------------------------------------------------------------
-def test_ollama_model_switch_and_status_note(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
-    ollama = client.fallback
-    installed = None
-
-    async def fake_installed():
-        return installed
-
-    ollama.installed = fake_installed
-    assert asyncio.run(client.check_ollama()) and "isn't running" in client.ollama_note
-
-    installed = ["llama3.2:3b", "qwen3:4b"]
-    assert asyncio.run(client.check_ollama()) and "ollama-model is missing" in client.ollama_note
-    assert not asyncio.run(client.check_ollama())  # unchanged: no UI update
-
-    client.set_primary("ollama:qwen3:4b")
-    assert client.primary is ollama and ollama.model == "qwen3:4b" and client.ollama_note == ""
-    assert client.describe()["ollama_models"] == installed
-
-
 # --- knowledge base sync -------------------------------------------------------------
 def test_kb_sync_reindexes_only_on_change_and_drops_stale_index(tmp_path, monkeypatch):
     import lancedb
@@ -628,37 +527,11 @@ def _meeting_assistant(tmp_path, monkeypatch, open_capture, open_stt=None, close
     return a, events
 
 
-@pytest.mark.parametrize("choice, warmups", [
-    ("claude", []),  # a cloud primary leaves the local LLM unloaded
-    ("ollama", ["warmup"]),
-    ("ollama:qwen3:4b", ["warmup"]),
-])
-def test_switching_the_primary_to_the_local_llm_warms_it(choice, warmups, tmp_path, monkeypatch):
+def test_switching_the_provider_publishes_the_list(tmp_path, monkeypatch):
     a, events = _meeting_assistant(tmp_path, monkeypatch, None)
-    a.llm = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-
-    async def run():
-        a.set_provider(choice)
-        await asyncio.sleep(0.01)
-
-    asyncio.run(run())
-    assert a.llm.fallback.calls == warmups
-    assert events[-1]["type"] == "providers"
-
-
-def test_a_new_local_model_is_warmed_again(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-
-    async def run():
-        client.set_primary("ollama:qwen3:4b")
-        await client.warmup()
-        client.set_primary("ollama:qwen3:4b")  # same model: already loaded
-        await client.warmup()
-        client.set_primary("ollama:llama3.2:3b")
-        await client.warmup()
-
-    asyncio.run(run())
-    assert client.fallback.calls == ["warmup", "warmup"]
+    a.llm = _llm(monkeypatch)
+    a.set_provider("openai")
+    assert a.llm.primary.id == "openai" and events[-1]["type"] == "providers"
 
 
 def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tmp_path, monkeypatch):
@@ -825,7 +698,7 @@ class RecordingLLM:
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
-        return self.reply(prompt), "ollama", self.delay
+        return self.reply(prompt), "claude", self.delay
 
 
 def test_translation_goes_into_your_language_and_from_it_into_the_second(tmp_path, monkeypatch):
@@ -871,7 +744,7 @@ def _proactive_assistant(tmp_path, monkeypatch, triggers):
     class FakeLLM:
         async def generate_json(self, system, prompt):
             t = next(answers)
-            return {"trigger": t, "suggestions": [{"text": f"{t} 1"}, {"text": f"{t} 2"}], "new_facts": []}, "ollama", 0.1
+            return {"trigger": t, "suggestions": [{"text": f"{t} 1"}, {"text": f"{t} 2"}], "new_facts": []}, "claude", 0.1
 
     a.llm = FakeLLM()
     a.kb = SimpleNamespace(context=lambda q: "")
@@ -913,22 +786,6 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
 
 
 # --- UI language ---------------------------------------------------------------------
-@pytest.mark.parametrize("lang, note", [
-    ("en", "Ollama model ollama-model is missing: ollama pull ollama-model, or pick an installed one above"),
-    ("de", "Ollama-Modell ollama-model fehlt: ollama pull ollama-model, oder oben ein installiertes wählen"),
-])
-def test_missing_ollama_model_note_follows_ui_language(monkeypatch, lang, note):
-    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
-
-    async def fake_installed():
-        return ["llama3.2:3b"]
-
-    client.fallback.installed = fake_installed
-    asyncio.run(client.check_ollama())
-    assert client.ollama_note == note
-
-
 @pytest.mark.parametrize("lang, error", [
     ("en", "'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
     ("de", "'parec' nicht gefunden. Bitte installieren (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
@@ -949,7 +806,7 @@ def test_audio_device_error_follows_ui_language_and_console_stays_english(tmp_pa
 def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkeypatch):
     class FakeLLM:
         async def generate_json(self, system, prompt):
-            return None, "ollama", 0.1
+            return None, "claude", 0.1
 
     class NoKnowledge:
         def context(self, query):
@@ -960,15 +817,6 @@ def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkey
     a.llm, a.kb = FakeLLM(), NoKnowledge()
     asyncio.run(a.ask("What now?"))
     assert events[-1] == {"type": "error", "text": "The answer wasn't valid JSON."}
-
-
-@pytest.mark.parametrize("lang, label", [("en", "Ollama (local)"), ("de", "Ollama (lokal)")])
-def test_ollama_label_follows_ui_language(monkeypatch, lang, label):
-    from copilot.providers import OllamaProvider
-
-    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    client = LLM([FakeProvider("claude"), OllamaProvider()])
-    assert {p["id"]: p["label"] for p in client.describe()["list"]}["ollama"] == label
 
 
 # --- presets per UI language ---------------------------------------------------------
@@ -997,7 +845,7 @@ def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp
     class FakeLLM:
         async def generate_json(self, system, prompt):
             prompts.append(prompt)
-            return {"trigger": "Answer", "suggestions": [{"text": "Yes."}], "new_facts": []}, "ollama", 0.1
+            return {"trigger": "Answer", "suggestions": [{"text": "Yes."}], "new_facts": []}, "claude", 0.1
 
     a.llm = FakeLLM()
     a.kb = SimpleNamespace(context=lambda q: "")
@@ -1051,7 +899,7 @@ def test_a_transliterate_language_segment_gets_a_transliteration_event(tmp_path,
     _speak(a, s)
     assert [e for e in events if e["type"] == "transliteration"] == [
         {"type": "transliteration", "id": s.id, "source": "Participant", "text": "Roman آپ کیسے ہیں",
-         "engine": "ollama", "ms": 0}]
+         "engine": "claude", "ms": 0}]
 
 
 @pytest.mark.parametrize("langs, lang", [(("ur",), "en"), ((), "ur")])
@@ -1076,7 +924,7 @@ def test_the_transcript_context_keeps_the_original_script(tmp_path, monkeypatch)
 
     async def generate_json(system, prompt):
         prompts.append(prompt)
-        return {"trigger": "None", "suggestions": []}, "ollama", 0.1
+        return {"trigger": "None", "suggestions": []}, "claude", 0.1
 
     a.llm.generate_json = generate_json
     a.kb = SimpleNamespace(context=lambda q: "")

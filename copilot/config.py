@@ -69,12 +69,12 @@ ECHO_WINDOW_S = 3.0
 ECHO_SIMILARITY = 80
 
 # --- LLM ---
-# Primary cloud engine (switchable live in the UI): gemini | claude | openai | grok | custom | ollama
+# The LLM, a cloud provider (switchable live in the UI): gemini | claude | openai | grok | custom
 LLM_PROVIDER = _env("LLM_PROVIDER", "gemini")
-CLOUD_TIMEOUT_S = float(_env("CLOUD_TIMEOUT", _env("GEMINI_TIMEOUT", "2.5")))  # then Ollama races in parallel
 CLOUD_HARD_TIMEOUT_S = 15  # a cloud call is abandoned (counted as an error) after this
-BREAKER_FAILS = 2
-BREAKER_COOLDOWN_S = 60
+RATE_LIMIT_PAUSE_S = 60  # a 429 without a retry delay pauses the provider this long
+# Settings of the removed local LLM; __main__ prints a hint when one is still set.
+IGNORED_SETTINGS = [n for n in ("OLLAMA_URL", "OLLAMA_MODEL", "CLOUD_TIMEOUT", "GEMINI_TIMEOUT") if os.environ.get(n)]
 
 GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-3.6-flash")  # 3.7 is deprecated (routes to 3.8)
@@ -98,9 +98,6 @@ CUSTOM_BASE_URL = _env("CUSTOM_BASE_URL", "")
 CUSTOM_API_KEY = _env("CUSTOM_API_KEY", "")  # optional for local gateways
 CUSTOM_MODEL = _env("CUSTOM_MODEL", "")
 
-OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = _env("OLLAMA_MODEL", "granite4:7b-a1b-h")
-OLLAMA_TIMEOUT_S = 30
 PLAIN_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
 
 # --- Assistant ---

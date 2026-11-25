@@ -70,7 +70,7 @@ def translation_target(lang):
 
 
 class Assistant:
-    def __init__(self, transcript, facts, kb, llm, emit, memory, open_capture=None):
+    def __init__(self, transcript, facts, kb, llm, emit, memory, open_capture=None, open_stt=None, close_stt=None):
         self.transcript = transcript
         self.memory = memory
         self.facts = facts
@@ -91,6 +91,9 @@ class Assistant:
         self._last_trigger = ("", 0.0)  # (trigger, time) of the last proactive card
         self.open_capture = open_capture  # () -> Capture, opened on the first meeting start
         self.capture = None
+        # The STT worker holds an engine only during a meeting: () -> None each, only signalling it.
+        self.open_stt = open_stt or (lambda: None)
+        self.close_stt = close_stt or (lambda: None)
         self.active = False  # a meeting is running: the participants are being listened to
         self.mic_on = True
         self.audio_error = ""
@@ -147,7 +150,8 @@ class Assistant:
         return {"type": "meeting", "active": self.active, "mic": self.mic_on, "error": self.audio_error}
 
     def _apply_audio(self):
-        """Open only what is needed: the devices are closed while stopped or muted."""
+        """Open only what is needed: the devices are closed while stopped or muted, the STT engine
+        while stopped."""
         self.audio_error = ""
         try:
             if self.active and self.capture is None:
@@ -162,6 +166,7 @@ class Assistant:
             self.active = False
             for source in self.capture.sources if self.capture else []:
                 source.stop()
+        (self.open_stt if self.active else self.close_stt)()  # closed once the queued chunks are done
         self.emit(self.meeting_state())
 
     # --- input ---------------------------------------------------------------

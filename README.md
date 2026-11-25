@@ -121,9 +121,9 @@ The folder button in the window header opens `knowledge_base/`, and the sliders 
 
 ### Speech recognition
 
-Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) picks **WhisperKit** on Apple Silicon Macs and **faster-whisper** everywhere else; set `STT_ENGINE=faster-whisper` or `STT_ENGINE=whisperkit` to force one, for example to compare them.
+Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) picks **WhisperKit** on Apple Silicon Macs and **faster-whisper** everywhere else; set `STT_ENGINE=faster-whisper` or `STT_ENGINE=whisperkit` to force one, for example to compare them. The STT model is only held in RAM during a meeting: starting a meeting loads it (the window shows "STT loading" for a few seconds, speech is kept and transcribed once it is ready), and stopping one frees it once the meeting's last sentence is transcribed.
 
-**WhisperKit** (Apple Silicon): the copilot starts Homebrew's `whisperkit-cli serve` on a free localhost port when it starts, warms it up, and stops it when it exits. The STT model is looked up in this order:
+**WhisperKit** (Apple Silicon): when a meeting starts, the copilot starts Homebrew's `whisperkit-cli serve` on a free localhost port and warms it up; it stops the server when the meeting ends. The STT model is looked up in this order:
 
 1. `WHISPERKIT_MODEL_PATH`, a model folder you set yourself
 2. [MacWhisper](https://goodsnooze.gumroad.com/l/macwhisper)'s models folder, if MacWhisper has downloaded the same model. It is only read, never changed, and only the open (MIT) Whisper model is used, never MacWhisper's Parakeet or Pro models

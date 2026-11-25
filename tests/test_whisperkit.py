@@ -4,6 +4,7 @@ import json
 import queue
 import sys
 import threading
+import time
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -312,11 +313,13 @@ class FakeFasterWhisper:
 
 
 @pytest.fixture
-def worker(monkeypatch):
-    """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to.
-    transcribe(chunk) feeds it one chunk and waits for the segment."""
+def idle_worker(monkeypatch):
+    """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to, not
+    opened yet. send(chunk) feeds it a chunk, segment() waits for the next segment's text and
+    wait_for(status) for an `stt` status."""
     monkeypatch.setattr(config, "WHISPER_LANGUAGE", "en")
     monkeypatch.setattr(config, "STT_ENGINE", "whisperkit")
+    monkeypatch.setattr(stt, "CLOSE_GRACE_S", 0.2)
     launcher = Launcher()
     fallbacks = []
 
@@ -328,26 +331,90 @@ def worker(monkeypatch):
     monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda on_status: whisperkit.WhisperKitEngine(launch=launcher,
                                                                                          on_status=on_status),
                                          "faster-whisper": fallback})
-    chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()
-
-    def on_status(status):
-        statuses.append(status)
-        ready.set()
-
-    w = stt.SttWorker(chunks, segments.put, stop, on_status=on_status)
+    chunks, segments, statuses, stop = queue.Queue(), queue.Queue(), [], threading.Event()
+    w = stt.SttWorker(chunks, segments.put, stop, on_status=statuses.append)
     w.start()
-    assert ready.wait(10), "the worker never became ready"
 
-    def transcribe(c=None):
-        chunks.put(c or chunk())
-        return segments.get(timeout=10).text
+    def wait_for(status, after=0):
+        deadline = time.monotonic() + 10
+        while status not in statuses[after:]:
+            assert time.monotonic() < deadline, f"never reported {status}: {statuses}"
+            time.sleep(0.01)
 
-    yield SimpleNamespace(transcribe=transcribe, launcher=launcher, fallbacks=fallbacks, statuses=statuses)
+    yield SimpleNamespace(open=w.open, close=w.close, send=lambda c=None: chunks.put(c or chunk()),
+                          segment=lambda: segments.get(timeout=10).text, wait_for=wait_for,
+                          launcher=launcher, fallbacks=fallbacks, statuses=statuses)
     stop.set()
     w.join(timeout=10)
     assert not w.is_alive()
     assert all(s.closed for s in launcher.servers), "a whisperkit-cli server outlived the worker"
     assert all(f.closed for f in fallbacks)
+
+
+READY = {"ready": True, "engine": "whisperkit"}
+IDLE = {"ready": False, "idle": True}
+
+
+@pytest.fixture
+def worker(idle_worker):
+    """The worker during a meeting. transcribe(chunk) feeds it one chunk and waits for the segment."""
+    idle_worker.open()
+    idle_worker.wait_for(READY)
+
+    def transcribe(c=None):
+        idle_worker.send(c)
+        return idle_worker.segment()
+
+    idle_worker.transcribe = transcribe
+    return idle_worker
+
+
+# --- The STT engine lives only during a meeting -------------------------------------
+def test_no_server_before_open_and_early_chunks_wait_for_the_engine(idle_worker):
+    idle_worker.send()  # speech captured before the engine exists
+    time.sleep(0.3)
+    assert idle_worker.launcher.servers == [] and idle_worker.statuses == []
+    idle_worker.open()
+    assert idle_worker.segment() == "Hello there."  # not lost
+    assert idle_worker.statuses == [{"ready": False}, READY]
+
+
+def test_close_closes_the_engine_after_the_queued_chunks(idle_worker):
+    idle_worker.open()
+    for _ in range(3):
+        idle_worker.send()
+    idle_worker.close()  # before the engine is even ready
+    assert [idle_worker.segment() for _ in range(3)] == ["Hello there."] * 3
+    idle_worker.wait_for(IDLE)
+    [server] = idle_worker.launcher.servers
+    assert server.closed
+
+
+def test_double_open_and_fast_close_open_build_one_engine(idle_worker):
+    idle_worker.open()
+    idle_worker.open()  # while building
+    idle_worker.wait_for(READY)
+    idle_worker.close()
+    idle_worker.open()
+    idle_worker.send()
+    assert idle_worker.segment() == "Hello there."
+    [server] = idle_worker.launcher.servers
+    assert not server.closed
+    assert idle_worker.statuses == [{"ready": False}, READY]
+
+
+def test_the_next_meeting_after_a_switch_builds_faster_whisper(worker):
+    for _ in range(2):  # a crash, then a second failure: switched to faster-whisper
+        worker.launcher.servers[-1].kill()
+        worker.transcribe()
+    worker.close()
+    worker.wait_for(IDLE)
+    assert worker.fallbacks[0].closed
+    seen = len(worker.statuses)
+    worker.open()
+    worker.wait_for({"ready": True, "engine": "faster-whisper"}, after=seen)
+    assert worker.transcribe() == "from faster-whisper"
+    assert len(worker.launcher.servers) == 2 and len(worker.fallbacks) == 2  # WhisperKit not retried
 
 
 def test_one_crash_is_recovered_by_one_restart(worker):
@@ -379,9 +446,9 @@ def test_second_failure_switches_to_faster_whisper_with_a_note(worker, monkeypat
     assert len(worker.launcher.servers) == 2  # no second restart
     assert all(s.closed for s in worker.launcher.servers)
     assert len(worker.fallbacks) == 1
-    first, restarting, restarted, switching, switched = worker.statuses
+    opening, first, restarting, restarted, switching, switched = worker.statuses
     reason = "whisperkit-cli exited with code -9"  # why, in both notes
-    assert first == {"ready": True, "engine": "whisperkit"}
+    assert opening == {"ready": False} and first == READY
     assert restarting == {"ready": False, "engine": "whisperkit", "note": restarting_note.format(reason=reason)}
     assert restarted == {"ready": True, "engine": "whisperkit", "note": ""}
     assert not switching["ready"] and switched["ready"]  # "STT loading" while faster-whisper loads

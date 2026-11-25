@@ -143,14 +143,23 @@ class FasterWhisperEngine:
         return Segment(chunk.source, text, lang, chunk.duration, chunk.t_end)
 
     def close(self):
-        pass
+        self.model = None  # the last reference: CTranslate2 frees the STT model's RAM (and VRAM)
 
 
 ENGINES = {e.name: e for e in (FasterWhisperEngine, whisperkit.WhisperKitEngine)}
 STT_ENGINES = tuple(ENGINES)
 
 
+# After close(), the VAD still ends an utterance that was open when the devices stopped (a few
+# 0.2 s silence feeds); the engine waits this long without a chunk before it closes.
+CLOSE_GRACE_S = 1.5
+
+
 class SttWorker(threading.Thread):
+    """Holds an STT engine only between open() and close() (a meeting): open() builds and warms
+    one, close() closes it once the queued chunks are transcribed. Chunks wait in the queue while
+    no engine is ready. Both only signal this thread, which owns the engine."""
+
     def __init__(self, in_queue, on_segment, stop_event, on_status=None):
         super().__init__(daemon=True, name="stt")
         self.in_queue = in_queue
@@ -158,22 +167,52 @@ class SttWorker(threading.Thread):
         self.stop_event = stop_event
         self.on_status = on_status or (lambda status: None)
         self.engine = None
+        self._wanted = threading.Event()  # a meeting runs
+        self._opened = threading.Event()  # open() was called: build, even if close() came first
+        self._setting = None  # STT_ENGINE, until a switch fixes faster-whisper for the run
+
+    def open(self):
+        self._wanted.set()
+        self._opened.set()
+
+    def close(self):
+        self._wanted.clear()
 
     def run(self):
-        self.engine = build_stt_engine(on_status=self.on_status)
         try:
-            self.on_status({"ready": True, "engine": self.engine.name})  # built warm
             while not self.stop_event.is_set():
-                try:
-                    chunk = self.in_queue.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                seg = self._transcribe(chunk)
-                if seg:
-                    seg.latency = time.monotonic() - chunk.t_end
-                    self.on_segment(seg)
+                if self.engine is None:
+                    if not self._opened.wait(0.2):
+                        continue
+                    self._opened.clear()
+                    self.on_status({"ready": False})
+                    self.engine = build_stt_engine(self._setting, on_status=self.on_status)  # built warm
+                    self.on_status({"ready": True, "engine": self.engine.name})
+                self._opened.clear()  # an open() while the engine exists needs no second one
+                if self._wanted.is_set():
+                    self._serve(0.2)
+                elif not self._serve(CLOSE_GRACE_S) and not self._wanted.is_set():  # drained
+                    self._close_engine()
+                    self.on_status({"ready": False, "idle": True})
         finally:
-            self.engine.close()
+            self._close_engine()
+
+    def _serve(self, timeout):
+        """Transcribe one chunk; False when none came within `timeout`."""
+        try:
+            chunk = self.in_queue.get(timeout=timeout)
+        except queue.Empty:
+            return False
+        seg = self._transcribe(chunk)
+        if seg:
+            seg.latency = time.monotonic() - chunk.t_end
+            self.on_segment(seg)
+        return True
+
+    def _close_engine(self):
+        if self.engine is not None:
+            engine, self.engine = self.engine, None
+            engine.close()
 
     def _transcribe(self, chunk):
         try:
@@ -186,7 +225,8 @@ class SttWorker(threading.Thread):
         """faster-whisper for the rest of the run, and a note in the UI saying why."""
         failed, fallback = self.engine.name, FasterWhisperEngine.name
         print(f"STT: {failed} failed ({error}), switching to {fallback} for the rest of the run")
-        self.engine.close()
+        self._close_engine()
+        self._setting = fallback  # later meetings of this run too
         status = {"ready": False, "engine": fallback, "note": t("stt.switched", failed=failed, error=error, fallback=fallback)}
         self.on_status(status)
         try:

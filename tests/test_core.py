@@ -509,7 +509,7 @@ class FakeEngine:
 def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
     built = []
 
-    def kit(on_status):
+    def kit(on_status, max_growth_gb):
         built.append(FakeEngine(fail))  # only reached when the start succeeds
         return built[-1]
 
@@ -617,13 +617,14 @@ class FakeSource:
         self.open = False
 
 
-def _meeting_assistant(tmp_path, monkeypatch, open_capture):
+def _meeting_assistant(tmp_path, monkeypatch, open_capture, open_stt=None, close_stt=None):
     from copilot.assistant import Assistant
     from copilot.memory import Memory
 
     monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path)
     events = []
-    a = Assistant(Transcript(), Facts(tmp_path / "facts.json"), None, None, events.append, Memory(), open_capture)
+    a = Assistant(Transcript(), Facts(tmp_path / "facts.json"), None, None, events.append, Memory(), open_capture,
+                  open_stt, close_stt)
     return a, events
 
 
@@ -700,8 +701,8 @@ class FakeSttWorker:
 
 def test_meeting_opens_the_stt_worker_only_while_running(tmp_path, monkeypatch):
     worker = FakeSttWorker()
-    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
-    a.open_stt, a.close_stt = worker.open, worker.close
+    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None, worker.open, worker.close), tmp_path,
+                      monkeypatch)
 
     async def run():
         assert worker.calls == []  # idle: no STT engine
@@ -748,8 +749,7 @@ def test_an_audio_error_leaves_the_stt_worker_closed(tmp_path, monkeypatch):
         raise RuntimeError("'parec' not found")
 
     worker = FakeSttWorker()
-    a, _ = _meeting_assistant(tmp_path, monkeypatch, broken)
-    a.open_stt, a.close_stt = worker.open, worker.close
+    a, _ = _meeting_assistant(tmp_path, monkeypatch, broken, worker.open, worker.close)
     a.start_meeting()
     assert "open" not in worker.calls
 

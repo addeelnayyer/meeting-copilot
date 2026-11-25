@@ -66,11 +66,8 @@ def build_stt_engine(setting=None, on_status=None, max_growth_gb=None):
     setting = setting or config.STT_ENGINE
     name, reason = chosen_stt_engine(setting)
     if name == whisperkit.WhisperKitEngine.name:
-        options = {"on_status": on_status}
-        if max_growth_gb is not None:
-            options["max_growth_gb"] = max_growth_gb
         try:
-            return _build_warm(functools.partial(ENGINES[name], **options))
+            return _build_warm(functools.partial(ENGINES[name], on_status=on_status, max_growth_gb=max_growth_gb))
         except Exception as e:
             name, reason = FasterWhisperEngine.name, _fallback_reason(setting, e)
     if reason:
@@ -90,11 +87,10 @@ def _build_warm(engine_class):
 
 class FasterWhisperEngine:
     name = "faster-whisper"
-    rss_of = "this process"  # the STT model is loaded in it
 
     @staticmethod
     def rss():
-        """RAM (RSS) of this process in bytes; None when unreadable."""
+        """RAM (RSS) of this process, which holds the STT model, in bytes; None when unreadable."""
         return ram.rss()
 
     def __init__(self):
@@ -177,31 +173,30 @@ class SttWorker(threading.Thread):
         self.stop_event = stop_event
         self.on_status = on_status or (lambda status: None)
         self.engine = None
-        self._wanted = threading.Event()  # a meeting runs
-        self._opened = threading.Event()  # open() was called: build, even if close() came first
+        self._meeting = False  # between open() and close()
+        self._wake = threading.Event()  # set by open(): build an engine, even if close() came first
         self._setting = None  # STT_ENGINE, until a switch fixes faster-whisper for the run
 
     def open(self):
-        self._wanted.set()
-        self._opened.set()
+        self._meeting = True  # before the wake, so a woken thread sees it
+        self._wake.set()
 
     def close(self):
-        self._wanted.clear()
+        self._meeting = False
 
     def run(self):
         try:
             while not self.stop_event.is_set():
+                if self.engine is None and not self._wake.wait(0.2):
+                    continue
+                self._wake.clear()  # an open() while the engine exists needs no second one
                 if self.engine is None:
-                    if not self._opened.wait(0.2):
-                        continue
-                    self._opened.clear()
                     self.on_status({"ready": False})
                     self.engine = build_stt_engine(self._setting, on_status=self.on_status)  # built warm
                     self.on_status({"ready": True, "engine": self.engine.name})
-                self._opened.clear()  # an open() while the engine exists needs no second one
-                if self._wanted.is_set():
+                if self._meeting:
                     self._serve(0.2)
-                elif not self._serve(CLOSE_GRACE_S) and not self._wanted.is_set():  # drained
+                elif not self._serve(CLOSE_GRACE_S) and not self._meeting:  # drained
                     self._close_engine()
                     self.on_status({"ready": False, "idle": True})
         finally:

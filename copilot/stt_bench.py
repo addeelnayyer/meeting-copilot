@@ -101,38 +101,48 @@ def main(path, source="Participant", engine=None, reference=None, requests=None,
         stt.close()
 
 
+def _timed(stt, c, lat, texts):
+    """Transcribes chunk c: its latency goes into lat, its text (if any) into texts unless None."""
+    t = time.perf_counter()
+    seg = stt.transcribe(c)
+    lat.append(time.perf_counter() - t)
+    if seg and texts is not None:
+        texts.append(seg.text)
+    return seg
+
+
+def _print_wer(ref, texts, note=""):
+    if ref is not None:
+        print(f"word error rate {word_error_rate(ref, ' '.join(texts)) * 100:.1f} %{note}")
+
+
 def _once(stt, chunks, ref):
     lat, texts = [], []
     for c in chunks:
-        t = time.perf_counter()
-        seg = stt.transcribe(c)
-        lat.append(time.perf_counter() - t)
-        if seg:
-            texts.append(seg.text)
+        seg = _timed(stt, c, lat, texts)
         print(f"{c.duration:4.2f}s audio  {lat[-1] * 1000:5.0f} ms  [{seg.lang if seg else '--'}] {seg.text if seg else ''}")
     print(f"\n{_latency(lat)}")
-    if ref is not None:
-        print(f"word error rate {word_error_rate(ref, ' '.join(texts)) * 100:.1f} %")
+    _print_wer(ref, texts)
+
+
+def _servers(stt):
+    """WhisperKit servers started so far; faster-whisper never changes process."""
+    return getattr(stt, "servers_started", 1)
 
 
 def _loop(stt, chunks, requests, ref, keep_replacement):
-    who = stt.rss_of  # changes when another whisperkit-cli server takes over
+    servers = _servers(stt)  # changes when another whisperkit-cli server takes over
     warm = stt.rss()
-    print(f"RSS of {who} after warm-up {gb(warm)}; server replacement "
+    print(f"RSS of the STT engine after warm-up {gb(warm)}; server replacement "
           f"{'on' if keep_replacement else 'off'}; {requests} requests")
     samples = [(0, warm)] if warm is not None else []
     lat, texts, switches = [], [], 0
     for n in range(1, requests + 1):
-        c = chunks[(n - 1) % len(chunks)]
-        t = time.perf_counter()
-        seg = stt.transcribe(c)
-        lat.append(time.perf_counter() - t)
-        if n <= len(chunks) and seg:
-            texts.append(seg.text)
-        if stt.rss_of != who:  # a replacement or a crash restart
-            who, switches = stt.rss_of, switches + 1
+        _timed(stt, chunks[(n - 1) % len(chunks)], lat, texts if n <= len(chunks) else None)
+        if _servers(stt) != servers:  # a replacement or a crash restart
+            servers, switches = _servers(stt), switches + 1
             samples = []  # from here on: the growth of the server now serving
-            print(f"request {n}: {who} serves from here")
+            print(f"request {n}: another whisperkit-cli server serves from here")
         if n % SAMPLE_EVERY == 0 or n == requests:
             rss = stt.rss()
             if rss is not None:
@@ -150,11 +160,10 @@ def _loop(stt, chunks, requests, ref, keep_replacement):
     if switches:
         print(f"servers switched {switches} times (replacement or crash restart)")
     print(_latency(lat))
-    if ref is not None:
-        if requests >= len(chunks):
-            print(f"word error rate {word_error_rate(ref, ' '.join(texts)) * 100:.1f} % (first pass)")
-        else:
-            print(f"word error rate: needs at least one full pass over the WAV ({len(chunks)} requests)")
+    if requests >= len(chunks):
+        _print_wer(ref, texts, " (first pass)")
+    elif ref is not None:
+        print(f"word error rate: needs at least one full pass over the WAV ({len(chunks)} requests)")
 
 
 if __name__ == "__main__":

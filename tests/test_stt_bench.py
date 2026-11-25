@@ -18,10 +18,9 @@ def test_word_error_rate_ignores_case_and_punctuation():
 
 
 def test_growth_per_1000_is_the_fitted_slope_of_rss_over_requests():
-    # 10 MB per 100 requests, with noise that a fit through all samples evens out.
-    mb = 1024 ** 2
-    samples = [(0, 500 * mb), (100, 511 * mb), (200, 519 * mb), (300, 530 * mb), (400, 540 * mb)]
-    assert growth_per_1000(samples) / mb == pytest.approx(100, abs=2)
+    # 0.01 GB per 100 requests, with noise that a fit through all samples evens out.
+    samples = [(n, size * ram.GB) for n, size in [(0, 0.500), (100, 0.511), (200, 0.519), (300, 0.530), (400, 0.540)]]
+    assert growth_per_1000(samples) / ram.GB == pytest.approx(0.1, abs=0.002)
 
 
 def test_growth_per_1000_needs_two_samples():

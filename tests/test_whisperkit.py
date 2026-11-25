@@ -1,5 +1,6 @@
 """WhisperKit STT engine against a fake whisperkit-cli server: no Mac or WhisperKit needed."""
 
+import functools
 import json
 import queue
 import sys
@@ -14,11 +15,19 @@ import numpy as np
 import pytest
 
 from copilot import config, stt, whisperkit
+from copilot.ram import GB
 from copilot.segment import Segment
 from copilot.vad import Chunk
 
 MODEL = "openai_whisper-large-v3-v20240930"
-GB = 1024 ** 3
+
+
+def eventually(condition, message=lambda: "the condition never held"):
+    """Waits up to 10 s for condition(); message() says what was awaited."""
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, message()
+        time.sleep(0.01)
 
 
 def seg(text, no_speech_prob=0.0, avg_logprob=-0.2, compression_ratio=1.2):
@@ -310,6 +319,25 @@ class Launcher:
         return self.servers[-1]
 
 
+@pytest.fixture
+def launcher():
+    """A Launcher; engine(**kwargs) builds a warmed-up WhisperKitEngine on it. Engines and servers
+    are closed afterwards."""
+    launcher, engines = Launcher(), []
+
+    def engine(**kwargs):
+        engines.append(whisperkit.WhisperKitEngine(launch=launcher, **kwargs))
+        engines[-1].warm_up()
+        return engines[-1]
+
+    launcher.engine = engine
+    yield launcher
+    for e in engines:
+        e.close()
+    for s in launcher.servers:
+        s.close()
+
+
 class FakeFasterWhisper:
     name = "faster-whisper"
 
@@ -327,14 +355,13 @@ class FakeFasterWhisper:
 
 
 @pytest.fixture
-def idle_worker(monkeypatch):
+def idle_worker(monkeypatch, launcher):
     """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to, not
     opened yet. send(chunk) feeds it a chunk, segment() waits for the next segment's text and
     wait_for(status) for an `stt` status."""
     monkeypatch.setattr(config, "WHISPER_LANGUAGE", "en")
     monkeypatch.setattr(config, "STT_ENGINE", "whisperkit")
     monkeypatch.setattr(stt, "CLOSE_GRACE_S", 0.2)
-    launcher = Launcher()
     fallbacks = []
 
     def fallback():
@@ -342,18 +369,14 @@ def idle_worker(monkeypatch):
         return fallbacks[-1]
 
     monkeypatch.setattr(stt, "chosen_stt_engine", lambda setting: (setting, None))  # no Mac needed
-    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda on_status: whisperkit.WhisperKitEngine(launch=launcher,
-                                                                                         on_status=on_status),
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": functools.partial(whisperkit.WhisperKitEngine, launch=launcher),
                                          "faster-whisper": fallback})
     chunks, segments, statuses, stop = queue.Queue(), queue.Queue(), [], threading.Event()
     w = stt.SttWorker(chunks, segments.put, stop, on_status=statuses.append)
     w.start()
 
     def wait_for(status, after=0):
-        deadline = time.monotonic() + 10
-        while status not in statuses[after:]:
-            assert time.monotonic() < deadline, f"never reported {status}: {statuses}"
-            time.sleep(0.01)
+        eventually(lambda: status in statuses[after:], lambda: f"never reported {status}: {statuses}")
 
     yield SimpleNamespace(open=w.open, close=w.close, send=lambda c=None: chunks.put(c or chunk()),
                           segment=lambda: segments.get(timeout=10).text, wait_for=wait_for,
@@ -528,42 +551,25 @@ def test_after_a_crash_restart_growth_counts_from_the_new_servers_warm_up(worker
     assert chunk_requests(restarted) == 1  # after a warm-up: RSS 3 GB, then 4 GB after the chunk
     assert worker.launcher.launches == 2  # 1 GB past the warm-up: under the limit
     worker.transcribe()  # 5 GB, 2 GB past the warm-up
-    deadline = time.monotonic() + 10
-    while worker.launcher.launches < 3:
-        assert time.monotonic() < deadline, "no replacement was started"
-        time.sleep(0.01)
+    eventually(lambda: worker.launcher.launches >= 3, lambda: "no replacement was started")
 
 
-def test_rss_follows_the_server_serving_now():
-    launcher = Launcher()
-    engine = whisperkit.WhisperKitEngine(launch=launcher)
-    try:
-        engine.warm_up()
-        first = engine.rss_of
-        launcher.servers[0].rss_bytes = 3 * GB
-        assert engine.rss() == 3 * GB
-        launcher.servers[0].kill()
-        engine.transcribe(chunk())  # restarted
-        assert engine.rss() == 2 * GB and engine.rss_of != first
-    finally:
-        engine.close()
-        for s in launcher.servers:
-            s.close()
+def test_rss_follows_the_server_serving_now(launcher):
+    engine = launcher.engine()
+    assert engine.servers_started == 1
+    launcher.servers[0].rss_bytes = 3 * GB
+    assert engine.rss() == 3 * GB
+    launcher.servers[0].kill()
+    engine.transcribe(chunk())  # restarted
+    assert engine.rss() == 2 * GB and engine.servers_started == 2
 
 
-def test_an_infinite_growth_limit_never_replaces_the_server():
-    launcher = Launcher()
-    engine = whisperkit.WhisperKitEngine(launch=launcher, max_growth_gb=float("inf"))
-    try:
-        engine.warm_up()
-        launcher.servers[0].rss_bytes += 100 * GB
-        for _ in range(3):
-            engine.transcribe(chunk())
-        assert launcher.launches == 1
-    finally:
-        engine.close()
-        for s in launcher.servers:
-            s.close()
+def test_an_infinite_growth_limit_never_replaces_the_server(launcher):
+    engine = launcher.engine(max_growth_gb=float("inf"))
+    launcher.servers[0].rss_bytes += 100 * GB
+    for _ in range(3):
+        engine.transcribe(chunk())
+    assert launcher.launches == 1 and engine.servers_started == 1
 
 
 def test_failed_replacement_keeps_the_old_server_and_is_retried_without_using_the_crash_restart(worker):
@@ -604,11 +610,21 @@ def test_a_replacement_needs_no_window_status(worker):
     assert worker.statuses == statuses
 
 
-def test_log_is_appended_with_a_marker_line_per_server_start(tmp_path, monkeypatch):
+@pytest.fixture
+def child(tmp_path, monkeypatch):
+    """whisperkit.Server runs child(code) as `python -c code` (`{port}` filled in) instead of
+    whisperkit-cli, with its log in tmp_path."""
     monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(whisperkit, "binary", lambda: sys.executable)
-    monkeypatch.setattr(whisperkit, "server_command",
-                        lambda cli, model, port: [cli, "-c", f"print('serving on {port}')"])
+
+    def run(code):
+        monkeypatch.setattr(whisperkit, "server_command", lambda cli, model, port: [cli, "-c", code.format(port=port)])
+
+    return run
+
+
+def test_log_is_appended_with_a_marker_line_per_server_start(tmp_path, child):
+    child("print('serving on {port}')")
     servers = []
     for _ in range(2):  # one after the other, as a replacement or restart starts them
         servers.append(whisperkit.Server(tmp_path / MODEL))
@@ -625,11 +641,8 @@ def test_log_is_appended_with_a_marker_line_per_server_start(tmp_path, monkeypat
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="ps is POSIX")
-def test_server_rss_is_read_from_the_child(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(whisperkit, "binary", lambda: sys.executable)
-    monkeypatch.setattr(whisperkit, "server_command",
-                        lambda cli, model, port: [cli, "-c", "import time; time.sleep(30)"])
+def test_server_rss_is_read_from_the_child(tmp_path, child):
+    child("import time; time.sleep(30)")
     server = whisperkit.Server(tmp_path / MODEL)
     try:
         assert server.rss() > 1024 * 1024  # a Python interpreter holds more than 1 MB

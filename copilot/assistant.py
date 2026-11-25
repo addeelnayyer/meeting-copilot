@@ -70,7 +70,7 @@ def translation_target(lang):
 
 
 class Assistant:
-    def __init__(self, transcript, facts, kb, llm, emit, memory, open_capture=None):
+    def __init__(self, transcript, facts, kb, llm, emit, memory, open_capture=None, open_stt=None, close_stt=None):
         self.transcript = transcript
         self.memory = memory
         self.facts = facts
@@ -91,11 +91,17 @@ class Assistant:
         self._last_trigger = ("", 0.0)  # (trigger, time) of the last proactive card
         self.open_capture = open_capture  # () -> Capture, opened on the first meeting start
         self.capture = None
+        # The STT worker holds an engine only during a meeting: () -> None each, only signalling it.
+        self.open_stt = open_stt or (lambda: None)
+        self.close_stt = close_stt or (lambda: None)
         self.active = False  # a meeting is running: the participants are being listened to
         self.mic_on = True
         self.audio_error = ""
         self.cards = []  # suggestions and answers of this meeting, for the meeting record
         self.started = None
+        # time.monotonic() at the start of the meeting, the clock of Segment.t_end: an earlier
+        # segment was cut in an ended meeting.
+        self._since = float("-inf")
 
     # --- meeting ---------------------------------------------------------------
     def start_meeting(self):
@@ -108,6 +114,7 @@ class Assistant:
         self.cards = []
         self._transliterations = set()
         self.started = time.time()
+        self._since = time.monotonic()
         self.emit({"type": "reset"})
         self.emit({"type": "memory", "text": self.memory.render()})
         self.active = True
@@ -147,7 +154,8 @@ class Assistant:
         return {"type": "meeting", "active": self.active, "mic": self.mic_on, "error": self.audio_error}
 
     def _apply_audio(self):
-        """Open only what is needed: the devices are closed while stopped or muted."""
+        """Open only what is needed: the devices are closed while stopped or muted, the STT engine
+        while stopped."""
         self.audio_error = ""
         try:
             if self.active and self.capture is None:
@@ -162,10 +170,16 @@ class Assistant:
             self.active = False
             for source in self.capture.sources if self.capture else []:
                 source.stop()
+        (self.open_stt if self.active else self.close_stt)()  # closed once the queued chunks are done
         self.emit(self.meeting_state())
 
     # --- input ---------------------------------------------------------------
     def on_segment(self, seg):
+        if seg.t_end < self._since:
+            # Cut before this meeting started, transcribed after it: the ended meeting's last
+            # words (its STT engine closed before the VAD sent them). Never this meeting's.
+            print("STT:      a segment of the ended meeting arrived after the next start; dropped")
+            return
         turn, new_turn, retracted = self.transcript.add(seg)
         for rid in retracted:
             self.emit({"type": "retract", "id": rid})
@@ -324,8 +338,7 @@ class Assistant:
     def set_provider(self, provider_id):
         self.llm.set_primary(provider_id)
         self.emit(self.llm.describe())
-        if provider_id.startswith("ollama:"):
-            asyncio.ensure_future(self.llm.fallback.warmup())
+        asyncio.ensure_future(self.llm.warmup())  # loads the local LLM only when it is now the primary
 
     @staticmethod
     def _limit(suggestions):

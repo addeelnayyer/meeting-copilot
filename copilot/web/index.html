@@ -110,7 +110,7 @@
   <span id="engine" class="badge" data-t-title="engine.title">-</span>
   <span id="lat"></span>
   <span id="cnote" style="color:var(--warn)"></span>
-  <span id="stt" class="badge off" data-t="stt.loading"></span>
+  <span id="stt" class="badge" data-t="stt.idle"></span>
   <span id="snote" style="color:var(--warn)"></span>
   <span class="meter" data-t-title="meter.user">
     <svg viewBox="0 0 24 24" fill="none" stroke="var(--user)" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
@@ -390,8 +390,8 @@ const handlers = {
   engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
     e.className = "badge " + (ev.engine === "ollama" ? "ollama" : "cloud");
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
-  stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : "stt.loading");
-    e.className = "badge" + (ev.ready ? "" : " off"); e.title = ev.engine || "";
+  stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : ev.idle ? "stt.idle" : "stt.loading");
+    e.className = "badge" + (ev.ready || ev.idle ? "" : " off"); e.title = ev.engine || "";
     $("snote").textContent = ev.note || ""; },
   levels: (ev) => { for (const k of ["User", "Participant"])
     $("lv-" + k).style.width = Math.min(100, Math.sqrt(ev[k]) * 300) + "%";

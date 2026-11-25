@@ -33,6 +33,10 @@ _Avoid_: model (unqualified), AI
 An LLM that runs on the user's machine rather than with a cloud provider.
 _Avoid_: Ollama (for the model), offline model
 
+**Meeting memory**:
+The rolling summary of the meeting so far, written by the LLM and kept in the meeting record.
+_Avoid_: memory (unqualified), summary (for the running one); say RAM for the machine's working memory
+
 **Fallback**:
 The local LLM's role when the primary LLM is slow, fails or is out of quota.
 _Avoid_: backup, secondary

@@ -1,9 +1,11 @@
 """WhisperKit STT engine against a fake whisperkit-cli server: no Mac or WhisperKit needed."""
 
+import functools
 import json
 import queue
 import sys
 import threading
+import time
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,10 +15,19 @@ import numpy as np
 import pytest
 
 from copilot import config, stt, whisperkit
+from copilot.ram import GB
 from copilot.segment import Segment
 from copilot.vad import Chunk
 
 MODEL = "openai_whisper-large-v3-v20240930"
+
+
+def eventually(condition, message=lambda: "the condition never held"):
+    """Waits up to 10 s for condition(); message() says what was awaited."""
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, message()
+        time.sleep(0.01)
 
 
 def seg(text, no_speech_prob=0.0, avg_logprob=-0.2, compression_ratio=1.2):
@@ -49,6 +60,7 @@ class FakeServer:
                 assert fields.pop("file").startswith(b"RIFF")
                 fields = {k: v.decode() for k, v in fields.items()}
                 fake.requests.append(fields)
+                fake.rss_bytes += fake.growth_per_request
                 self._send(fake.status, fake.reply(fields) if fake.status == 200 else {"error": "boom"})
 
             def _send(self, status, data):
@@ -63,12 +75,17 @@ class FakeServer:
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
         self.closed = self.dead = False
         self.status = 200  # of transcription replies
+        self.rss_bytes = 2 * GB  # what rss() reports; tests grow it
+        self.growth_per_request = 0  # added to rss_bytes by every transcription request
         threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
 
     # The engine's view of a launched whisperkit-cli server.
     def check(self):
         if self.dead:
             raise RuntimeError("whisperkit-cli exited with code -9")
+
+    def rss(self):
+        return self.rss_bytes
 
     def kill(self):
         """A crash: connections are refused from now on."""
@@ -287,12 +304,38 @@ class Launcher:
     def __init__(self):
         self.servers = []
         self.fail = False
+        self.launches = 0  # calls, failed ones included
+        self.hold = threading.Event()  # cleared: a launch waits until it is set
+        self.hold.set()
+        self.growth_per_request = 0  # of the servers launched from now on
 
     def __call__(self):
+        self.launches += 1
+        assert self.hold.wait(10), "a launch was held for too long"
         if self.fail:
             raise RuntimeError("whisperkit-cli is not on the PATH")
         self.servers.append(FakeServer())
+        self.servers[-1].growth_per_request = self.growth_per_request
         return self.servers[-1]
+
+
+@pytest.fixture
+def launcher():
+    """A Launcher; engine(**kwargs) builds a warmed-up WhisperKitEngine on it. Engines and servers
+    are closed afterwards."""
+    launcher, engines = Launcher(), []
+
+    def engine(**kwargs):
+        engines.append(whisperkit.WhisperKitEngine(launch=launcher, **kwargs))
+        engines[-1].warm_up()
+        return engines[-1]
+
+    launcher.engine = engine
+    yield launcher
+    for e in engines:
+        e.close()
+    for s in launcher.servers:
+        s.close()
 
 
 class FakeFasterWhisper:
@@ -312,12 +355,13 @@ class FakeFasterWhisper:
 
 
 @pytest.fixture
-def worker(monkeypatch):
-    """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to.
-    transcribe(chunk) feeds it one chunk and waits for the segment."""
+def idle_worker(monkeypatch, launcher):
+    """An SttWorker on WhisperKit (fake servers) with a fake faster-whisper to fall back to, not
+    opened yet. send(chunk) feeds it a chunk, segment() waits for the next segment's text and
+    wait_for(status) for an `stt` status."""
     monkeypatch.setattr(config, "WHISPER_LANGUAGE", "en")
     monkeypatch.setattr(config, "STT_ENGINE", "whisperkit")
-    launcher = Launcher()
+    monkeypatch.setattr(stt, "CLOSE_GRACE_S", 0.2)
     fallbacks = []
 
     def fallback():
@@ -325,29 +369,89 @@ def worker(monkeypatch):
         return fallbacks[-1]
 
     monkeypatch.setattr(stt, "chosen_stt_engine", lambda setting: (setting, None))  # no Mac needed
-    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": lambda on_status: whisperkit.WhisperKitEngine(launch=launcher,
-                                                                                         on_status=on_status),
+    monkeypatch.setattr(stt, "ENGINES", {"whisperkit": functools.partial(whisperkit.WhisperKitEngine, launch=launcher),
                                          "faster-whisper": fallback})
-    chunks, segments, statuses, stop, ready = queue.Queue(), queue.Queue(), [], threading.Event(), threading.Event()
-
-    def on_status(status):
-        statuses.append(status)
-        ready.set()
-
-    w = stt.SttWorker(chunks, segments.put, stop, on_status=on_status)
+    chunks, segments, statuses, stop = queue.Queue(), queue.Queue(), [], threading.Event()
+    w = stt.SttWorker(chunks, segments.put, stop, on_status=statuses.append)
     w.start()
-    assert ready.wait(10), "the worker never became ready"
 
-    def transcribe(c=None):
-        chunks.put(c or chunk())
-        return segments.get(timeout=10).text
+    def wait_for(status, after=0):
+        eventually(lambda: status in statuses[after:], lambda: f"never reported {status}: {statuses}")
 
-    yield SimpleNamespace(transcribe=transcribe, launcher=launcher, fallbacks=fallbacks, statuses=statuses)
+    yield SimpleNamespace(open=w.open, close=w.close, send=lambda c=None: chunks.put(c or chunk()),
+                          segment=lambda: segments.get(timeout=10).text, wait_for=wait_for,
+                          launcher=launcher, fallbacks=fallbacks, statuses=statuses)
     stop.set()
     w.join(timeout=10)
     assert not w.is_alive()
     assert all(s.closed for s in launcher.servers), "a whisperkit-cli server outlived the worker"
     assert all(f.closed for f in fallbacks)
+
+
+READY = {"ready": True, "engine": "whisperkit"}
+IDLE = {"ready": False, "idle": True}
+
+
+@pytest.fixture
+def worker(idle_worker):
+    """The worker during a meeting. transcribe(chunk) feeds it one chunk and waits for the segment."""
+    idle_worker.open()
+    idle_worker.wait_for(READY)
+
+    def transcribe(c=None):
+        idle_worker.send(c)
+        return idle_worker.segment()
+
+    idle_worker.transcribe = transcribe
+    return idle_worker
+
+
+# --- The STT engine lives only during a meeting -------------------------------------
+def test_no_server_before_open_and_early_chunks_wait_for_the_engine(idle_worker):
+    idle_worker.send()  # speech captured before the engine exists
+    time.sleep(0.3)
+    assert idle_worker.launcher.servers == [] and idle_worker.statuses == []
+    idle_worker.open()
+    assert idle_worker.segment() == "Hello there."  # not lost
+    assert idle_worker.statuses == [{"ready": False}, READY]
+
+
+def test_close_closes_the_engine_after_the_queued_chunks(idle_worker):
+    idle_worker.open()
+    for _ in range(3):
+        idle_worker.send()
+    idle_worker.close()  # before the engine is even ready
+    assert [idle_worker.segment() for _ in range(3)] == ["Hello there."] * 3
+    idle_worker.wait_for(IDLE)
+    [server] = idle_worker.launcher.servers
+    assert server.closed
+
+
+def test_double_open_and_fast_close_open_build_one_engine(idle_worker):
+    idle_worker.open()
+    idle_worker.open()  # while building
+    idle_worker.wait_for(READY)
+    idle_worker.close()
+    idle_worker.open()
+    idle_worker.send()
+    assert idle_worker.segment() == "Hello there."
+    [server] = idle_worker.launcher.servers
+    assert not server.closed
+    assert idle_worker.statuses == [{"ready": False}, READY]
+
+
+def test_the_next_meeting_after_a_switch_builds_faster_whisper(worker):
+    for _ in range(2):  # a crash, then a second failure: switched to faster-whisper
+        worker.launcher.servers[-1].kill()
+        worker.transcribe()
+    worker.close()
+    worker.wait_for(IDLE)
+    assert worker.fallbacks[0].closed
+    seen = len(worker.statuses)
+    worker.open()
+    worker.wait_for({"ready": True, "engine": "faster-whisper"}, after=seen)
+    assert worker.transcribe() == "from faster-whisper"
+    assert len(worker.launcher.servers) == 2 and len(worker.fallbacks) == 2  # WhisperKit not retried
 
 
 def test_one_crash_is_recovered_by_one_restart(worker):
@@ -379,9 +483,9 @@ def test_second_failure_switches_to_faster_whisper_with_a_note(worker, monkeypat
     assert len(worker.launcher.servers) == 2  # no second restart
     assert all(s.closed for s in worker.launcher.servers)
     assert len(worker.fallbacks) == 1
-    first, restarting, restarted, switching, switched = worker.statuses
+    opening, first, restarting, restarted, switching, switched = worker.statuses
     reason = "whisperkit-cli exited with code -9"  # why, in both notes
-    assert first == {"ready": True, "engine": "whisperkit"}
+    assert opening == {"ready": False} and first == READY
     assert restarting == {"ready": False, "engine": "whisperkit", "note": restarting_note.format(reason=reason)}
     assert restarted == {"ready": True, "engine": "whisperkit", "note": ""}
     assert not switching["ready"] and switched["ready"]  # "STT loading" while faster-whisper loads
@@ -404,6 +508,147 @@ def test_server_errors_count_as_failures(worker):
     worker.launcher.servers[-1].status = 500
     assert worker.transcribe() == "from faster-whisper"
     assert "500" in worker.statuses[-1]["note"]
+
+
+# --- Replacing a server that outgrew its RAM limit (ADR 0001) ----------------------
+def chunk_requests(server):
+    """Transcription requests the server got after its warm-up."""
+    return len(server.requests) - 1
+
+
+def until(condition, transcribe, limit=200):
+    """Feeds chunks until condition() holds; the texts of all of them."""
+    texts = []
+    while not condition():
+        assert len(texts) < limit, "condition never held"
+        texts.append(transcribe())
+    return texts
+
+
+def test_server_past_its_growth_limit_is_replaced_without_losing_a_chunk(worker, capsys):
+    old = worker.launcher.servers[0]
+    texts = [worker.transcribe()]
+    old.rss_bytes += int(1.6 * GB)  # past the default 1.5 GB over its warm-up size
+    texts += until(lambda: len(worker.launcher.servers) == 2 and chunk_requests(worker.launcher.servers[1]) > 0,
+                   worker.transcribe)
+    new = worker.launcher.servers[1]
+    assert old.closed and not new.closed
+    texts.append(worker.transcribe())
+    assert chunk_requests(new) == 2  # the next chunk is on the new server too
+    # Every chunk is transcribed exactly once, on one of the two servers.
+    assert texts == ["Hello there."] * len(texts)
+    assert chunk_requests(old) + chunk_requests(new) == len(texts)
+    assert worker.launcher.launches == 2
+    lines = [line for line in capsys.readouterr().out.splitlines() if "replaced" in line]
+    assert len(lines) == 1 and "3.60 GB" in lines[0] and "2.00 GB" in lines[0]
+
+
+def test_after_a_crash_restart_growth_counts_from_the_new_servers_warm_up(worker):
+    worker.launcher.growth_per_request = 1 * GB  # every request of a server launched from now on
+    worker.launcher.servers[-1].kill()
+    assert worker.transcribe() == "Hello there."  # restarted, the chunk in flight sent again
+    restarted = worker.launcher.servers[1]
+    assert chunk_requests(restarted) == 1  # after a warm-up: RSS 3 GB, then 4 GB after the chunk
+    assert worker.launcher.launches == 2  # 1 GB past the warm-up: under the limit
+    worker.transcribe()  # 5 GB, 2 GB past the warm-up
+    eventually(lambda: worker.launcher.launches >= 3, lambda: "no replacement was started")
+
+
+def test_rss_follows_the_server_serving_now(launcher):
+    engine = launcher.engine()
+    assert engine.servers_started == 1
+    launcher.servers[0].rss_bytes = 3 * GB
+    assert engine.rss() == 3 * GB
+    launcher.servers[0].kill()
+    engine.transcribe(chunk())  # restarted
+    assert engine.rss() == 2 * GB and engine.servers_started == 2
+
+
+def test_an_infinite_growth_limit_never_replaces_the_server(launcher):
+    engine = launcher.engine(max_growth_gb=float("inf"))
+    launcher.servers[0].rss_bytes += 100 * GB
+    for _ in range(3):
+        engine.transcribe(chunk())
+    assert launcher.launches == 1 and engine.servers_started == 1
+
+
+def test_failed_replacement_keeps_the_old_server_and_is_retried_without_using_the_crash_restart(worker):
+    old = worker.launcher.servers[0]
+    worker.launcher.fail = True
+    old.rss_bytes += 2 * GB
+    texts = until(lambda: worker.launcher.launches >= 3, worker.transcribe)  # tried, failed, tried again
+    assert texts == ["Hello there."] * len(texts)
+    assert chunk_requests(old) == len(texts) and not old.closed
+    worker.launcher.fail = False
+    until(lambda: old.closed, worker.transcribe)
+    new = worker.launcher.servers[-1]
+    assert len(worker.launcher.servers) == 2
+    # A real crash afterwards still gets its one restart.
+    new.kill()
+    assert worker.transcribe() == "Hello there."
+    assert len(worker.launcher.servers) == 3 and worker.fallbacks == []
+
+
+def test_only_one_replacement_is_in_progress_and_none_outlives_the_worker(worker):
+    old = worker.launcher.servers[0]
+    worker.launcher.hold.clear()  # the replacement's launch waits
+    old.rss_bytes += 2 * GB
+    for _ in range(5):
+        assert worker.transcribe() == "Hello there."
+    assert worker.launcher.launches == 2  # the first server and one replacement, however many chunks are over the limit
+    assert chunk_requests(old) == 5
+    worker.launcher.hold.set()
+    # The worker stops while the warm replacement waits for the next request: both servers are
+    # closed by the fixture's check.
+
+
+def test_a_replacement_needs_no_window_status(worker):
+    old = worker.launcher.servers[0]
+    statuses = list(worker.statuses)
+    old.rss_bytes += 2 * GB
+    until(lambda: old.closed, worker.transcribe)
+    assert worker.statuses == statuses
+
+
+@pytest.fixture
+def child(tmp_path, monkeypatch):
+    """whisperkit.Server runs child(code) as `python -c code` (`{port}` filled in) instead of
+    whisperkit-cli, with its log in tmp_path."""
+    monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(whisperkit, "binary", lambda: sys.executable)
+
+    def run(code):
+        monkeypatch.setattr(whisperkit, "server_command", lambda cli, model, port: [cli, "-c", code.format(port=port)])
+
+    return run
+
+
+def test_log_is_appended_with_a_marker_line_per_server_start(tmp_path, child):
+    child("print('serving on {port}')")
+    servers = []
+    for _ in range(2):  # one after the other, as a replacement or restart starts them
+        servers.append(whisperkit.Server(tmp_path / MODEL))
+        servers[-1].proc.wait(timeout=10)
+        servers[-1].close()
+    lines = (tmp_path / "whisperkit.log").read_text(encoding="utf-8").splitlines()
+    markers = [line for line in lines if line.startswith("---")]
+    assert len(markers) == 2
+    for s, marker in zip(servers, markers):
+        port = s.url.rsplit(":", 1)[1]
+        assert f"port {port}" in marker and MODEL in marker
+        assert f"serving on {port}" in lines
+    assert lines.index(markers[0]) < lines.index(f"serving on {servers[0].url.rsplit(':', 1)[1]}") < lines.index(markers[1])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ps is POSIX")
+def test_server_rss_is_read_from_the_child(tmp_path, child):
+    child("import time; time.sleep(30)")
+    server = whisperkit.Server(tmp_path / MODEL)
+    try:
+        assert server.rss() > 1024 * 1024  # a Python interpreter holds more than 1 MB
+    finally:
+        server.close()
+    assert server.rss() is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Homebrew paths are POSIX")

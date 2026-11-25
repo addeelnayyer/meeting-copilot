@@ -121,9 +121,9 @@ The folder button in the window header opens `knowledge_base/`, and the sliders 
 
 ### Speech recognition
 
-Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) picks **WhisperKit** on Apple Silicon Macs and **faster-whisper** everywhere else; set `STT_ENGINE=faster-whisper` or `STT_ENGINE=whisperkit` to force one, for example to compare them.
+Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) picks **WhisperKit** on Apple Silicon Macs and **faster-whisper** everywhere else; set `STT_ENGINE=faster-whisper` or `STT_ENGINE=whisperkit` to force one, for example to compare them. The STT model is only held in RAM during a meeting: starting a meeting loads it (the window shows "STT loading" for a few seconds, speech is kept and transcribed once it is ready), and stopping one frees it once the meeting's last sentence is transcribed.
 
-**WhisperKit** (Apple Silicon): the copilot starts Homebrew's `whisperkit-cli serve` on a free localhost port when it starts, warms it up, and stops it when it exits. The STT model is looked up in this order:
+**WhisperKit** (Apple Silicon): when a meeting starts, the copilot starts Homebrew's `whisperkit-cli serve` on a free localhost port and warms it up; it stops the server when the meeting ends. The STT model is looked up in this order:
 
 1. `WHISPERKIT_MODEL_PATH`, a model folder you set yourself
 2. [MacWhisper](https://goodsnooze.gumroad.com/l/macwhisper)'s models folder, if MacWhisper has downloaded the same model. It is only read, never changed, and only the open (MIT) Whisper model is used, never MacWhisper's Parakeet or Pro models
@@ -132,7 +132,9 @@ Two STT engines run `large-v3-turbo` locally. `STT_ENGINE=auto` (the default) pi
 
 `WHISPERKIT_MODEL` (default `openai_whisper-large-v3-v20240930`, which is large-v3-turbo) picks another model from that repo. `WHISPERKIT_COMPUTE_UNITS` sets where the encoder and decoder run: `cpuAndGPU` (the default; about 0.3 s per chunk on an M4 Max), `cpuAndNeuralEngine` (about 0.7 s there), `all` or `cpuOnly`. Try the others with `stt_bench` on other Apple chips. The very first start can take a few minutes while Core ML prepares the model for your chip; the window says the STT engine is still loading meanwhile.
 
-**Fallback:** if `whisperkit-cli` is missing, the model can't be found or downloaded, or the server doesn't start, the copilot uses faster-whisper (on a Mac: on the CPU) and prints why. If the server crashes during a meeting, it is restarted once; after a second failure the copilot switches to faster-whisper for the rest of the run, and the window says so. The copilot never installs anything by itself.
+**RAM limit:** `whisperkit-cli serve` keeps RAM with every request and never gives it back (about 20 GB per hour of meeting with large-v3). The copilot therefore measures the server's RAM after warm-up and after every request. Once it has grown more than `WHISPERKIT_MAX_GROWTH_GB` (default 1.5) past that, a replacement server is started and warmed up in the background while the old one keeps serving; the next chunk goes to the new server and the old one is stopped. Transcription does not pause, the window shows nothing, and the console prints one line per replacement. During a switch two servers are in RAM for a few seconds. A replacement that fails to start is retried after the next chunk and does not count as a crash. `sessions/whisperkit.log` keeps the output of every server, with a marker line per start. Why: [ADR 0001](docs/adr/0001-recycle-whisperkit-server.md).
+
+**Fallback:** if `whisperkit-cli` is missing, the model can't be found or downloaded, or the server doesn't start, the copilot uses faster-whisper (on a Mac: on the CPU) and prints why. If the server crashes during a meeting, it is restarted once and warmed up, and its RAM limit counts from that warm-up; after a second failure the copilot switches to faster-whisper for the rest of the run, and the window says so. The copilot never installs anything by itself.
 
 **faster-whisper** (Windows, Linux, Intel Macs and the fallback): `WHISPER_DEVICE`, `WHISPER_MODEL` and `WHISPER_COMPUTE` apply to it only and default to `auto`: `large-v3-turbo` in `float16` when CUDA is usable, otherwise `small` in `int8` on the CPU. To keep up, a 2.5 s chunk must be transcribed in well under 2.5 s (about 1.2 s when both sides talk at once). Check your machine with `uv run python -m copilot.stt_bench recording.wav` (add `--engine faster-whisper` or `--engine whisperkit` to compare). If it is too slow, set `WHISPER_MODEL=base` (faster, less accurate), fix `WHISPER_LANGUAGE` to skip language detection (this works for both engines), and close other CPU-heavy apps. Recent desktop CPUs usually manage `small`; low-power laptop CPUs may need `base`.
 
@@ -213,7 +215,7 @@ loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
 - **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Memory" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
-- **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off.
+- **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off. Ollama loads its model into RAM only when it is needed: at startup or when you pick it in the window if it is the primary LLM, otherwise on the first request it gets after a slow or failing cloud call (that first fallback answer takes a few seconds longer).
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting. A transliterated segment's entry also carries its `transliteration`.
 
 The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.md` for interviews).
@@ -222,12 +224,20 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
-uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine faster-whisper|whisperkit)
+uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine, --reference, --requests: see below)
 uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)
 ```
+
+**STT benchmark:** `stt_bench` cuts the WAV into chunks with the real VAD and sends them through the STT engine the app would build (`--engine` overrides `STT_ENGINE`; `WHISPERKIT_MODEL`, `WHISPERKIT_COMPUTE_UNITS` and `WHISPER_MODEL` from `.env` or the environment pick the STT model). It prints the median and p95 latency per chunk, and with `--reference transcript.txt` (the text spoken in the whole WAV) the word error rate, ignoring case and punctuation. The request loop measures RAM:
+
+```sh
+uv run python -m copilot.stt_bench recording.wav --reference transcript.txt --requests 2000
+```
+
+It sends the WAV's chunks round-robin until that many requests have been made (one request is one chunk) and prints the RSS of the STT engine after warm-up, a line every 100 requests, and the RSS growth per 1,000 requests (the fitted slope through those samples), next to the latency and the word error rate of the first pass over the WAV. For WhisperKit the RSS is that of the `whisperkit-cli serve` process, read the same way as for the RAM limit; for faster-whisper it is that of the copilot process. The server replacement is off during the loop, so the raw growth shows; `--keep-replacement` leaves it on (with `WHISPERKIT_MAX_GROWTH_GB` as configured), to watch replacements happen: each switch to a new server is printed, and the growth is then that of the server serving at the end.
 
 To use a device other than the system default, set `MIC_DEVICE` / `LOOPBACK_DEVICE` in `.env` to part of its name, as shown by `copilot.devices`.
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -119,12 +120,20 @@ class FakeProvider(Provider):
     def __init__(self, id, delay=0.0, error=None, configured=True):
         self.id, self.label, self.model = id, id.title(), f"{id}-model"
         self.delay, self.error, self._configured = delay, error, configured
+        self.calls = []  # "warmup" and "complete", in the order they reached the provider
+        self.warmup_error = None  # raised by warmup()
 
     @property
     def configured(self):
         return self._configured
 
+    async def warmup(self):
+        self.calls.append("warmup")
+        if self.warmup_error:
+            raise self.warmup_error
+
     async def complete(self, system, prompt, schema=None):
+        self.calls.append("complete")
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
@@ -173,6 +182,73 @@ def test_gemini_quota_429_skips_primary_for_retry_delay(monkeypatch):
     _, engine, _ = asyncio.run(client.generate_json("s", "p"))
     assert engine == "ollama" and not client.primary_available
     assert "1042 min" in client.note
+
+
+def test_cloud_primary_does_not_warm_the_local_llm(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    asyncio.run(client.warmup())
+    assert client.fallback.calls == []
+
+
+def test_local_primary_is_warmed_at_startup(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client.set_primary("ollama")
+    asyncio.run(client.warmup())
+    assert client.fallback.calls == ["warmup"]
+
+
+def test_cloud_failure_warms_the_fallback_once_before_it_answers(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+
+    async def run():
+        first = await client.generate_json("s", "p")  # the cloud fails, the fallback answers
+        await client.generate_json("s", "p")
+        await client.generate_json("s", "p")  # breaker open: straight to the fallback
+        return first
+
+    _, engine, _ = asyncio.run(run())
+    assert engine == "ollama"
+    assert client.fallback.calls == ["warmup", "complete", "complete", "complete"]
+
+
+def test_hedge_warms_the_fallback_once_for_concurrent_requests(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.0)
+
+    async def run():
+        return await asyncio.gather(client.generate_json("s", "p"), client.generate_json("s", "p"))
+
+    assert [engine for _, engine, _ in asyncio.run(run())] == ["ollama", "ollama"]
+    assert client.fallback.calls == ["warmup", "complete", "complete"]
+
+
+def test_a_failed_warm_up_is_not_kept_and_the_fallback_still_answers(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+    client.fallback.warmup_error = ValueError("unexpected reply")  # not an httpx.HTTPError
+
+    async def run():
+        engines = [(await client.generate_json("s", "p"))[1] for _ in range(2)]
+        client.fallback.warmup_error = None
+        engines += [(await client.generate_json("s", "p"))[1] for _ in range(2)]
+        return engines
+
+    assert asyncio.run(run()) == ["ollama"] * 4
+    # Tried again on every request until one warm-up succeeds, then kept.
+    assert client.fallback.calls == ["warmup", "complete", "warmup", "complete", "warmup", "complete", "complete"]
+
+
+def test_a_failed_warm_up_of_the_local_primary_is_retried(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client.set_primary("ollama")
+    client.fallback.warmup_error = ValueError("unexpected reply")
+
+    async def run():
+        await client.warmup()  # reported, not raised
+        client.fallback.warmup_error = None
+        await client.warmup()
+        await client.warmup()
+
+    asyncio.run(run())
+    assert client.fallback.calls == ["warmup", "warmup"]
 
 
 def test_http_429_uses_retry_after_header():
@@ -433,7 +509,7 @@ class FakeEngine:
 def test_build_stt_engine_falls_back_when_whisperkit_fails_to_start(setting, fail, why, monkeypatch, capsys):
     built = []
 
-    def kit(on_status):
+    def kit(on_status, max_growth_gb):
         built.append(FakeEngine(fail))  # only reached when the start succeeds
         return built[-1]
 
@@ -453,6 +529,24 @@ def test_build_stt_engine_prints_the_choice_reason(monkeypatch, capsys):
     monkeypatch.setattr(stt, "ENGINES", {"faster-whisper": FakeEngine})
     assert build_stt_engine().warm
     assert "WhisperKit is unavailable: x" in capsys.readouterr().out
+
+
+def test_faster_whisper_close_releases_its_stt_model(monkeypatch):
+    import gc
+    import weakref
+
+    import faster_whisper
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", Model)
+    engine = stt.FasterWhisperEngine()
+    model = weakref.ref(engine.model)
+    engine.close()
+    gc.collect()
+    assert model() is None
 
 
 def test_hotkeys_convert_to_pynput_format():
@@ -523,14 +617,48 @@ class FakeSource:
         self.open = False
 
 
-def _meeting_assistant(tmp_path, monkeypatch, open_capture):
+def _meeting_assistant(tmp_path, monkeypatch, open_capture, open_stt=None, close_stt=None):
     from copilot.assistant import Assistant
     from copilot.memory import Memory
 
     monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path)
     events = []
-    a = Assistant(Transcript(), Facts(tmp_path / "facts.json"), None, None, events.append, Memory(), open_capture)
+    a = Assistant(Transcript(), Facts(tmp_path / "facts.json"), None, None, events.append, Memory(), open_capture,
+                  open_stt, close_stt)
     return a, events
+
+
+@pytest.mark.parametrize("choice, warmups", [
+    ("claude", []),  # a cloud primary leaves the local LLM unloaded
+    ("ollama", ["warmup"]),
+    ("ollama:qwen3:4b", ["warmup"]),
+])
+def test_switching_the_primary_to_the_local_llm_warms_it(choice, warmups, tmp_path, monkeypatch):
+    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
+    a.llm = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+
+    async def run():
+        a.set_provider(choice)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert a.llm.fallback.calls == warmups
+    assert events[-1]["type"] == "providers"
+
+
+def test_a_new_local_model_is_warmed_again(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+
+    async def run():
+        client.set_primary("ollama:qwen3:4b")
+        await client.warmup()
+        client.set_primary("ollama:qwen3:4b")  # same model: already loaded
+        await client.warmup()
+        client.set_primary("ollama:llama3.2:3b")
+        await client.warmup()
+
+    asyncio.run(run())
+    assert client.fallback.calls == ["warmup", "warmup"]
 
 
 def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tmp_path, monkeypatch):
@@ -556,6 +684,76 @@ def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tm
 
     asyncio.run(run())
     assert events[-1] == {"type": "meeting", "active": True, "mic": False, "error": ""}
+
+
+class FakeSttWorker:
+    """Records whether the STT worker was told to hold an engine."""
+
+    def __init__(self):
+        self.calls = []
+
+    def open(self):
+        self.calls.append("open")
+
+    def close(self):
+        self.calls.append("close")
+
+
+def test_meeting_opens_the_stt_worker_only_while_running(tmp_path, monkeypatch):
+    worker = FakeSttWorker()
+    a, _ = _recording(*_meeting_assistant(tmp_path, monkeypatch, None, worker.open, worker.close), tmp_path,
+                      monkeypatch)
+
+    async def run():
+        assert worker.calls == []  # idle: no STT engine
+        a.start_meeting()
+        assert worker.calls[-1] == "open"
+        a.set_mic(False)  # muting keeps the participant transcribed
+        assert worker.calls[-1] == "open"
+        await a.stop_meeting()
+        assert worker.calls[-1] == "close"
+        a.start_meeting()
+        assert worker.calls[-1] == "open"
+        await a.stop_meeting()
+
+    asyncio.run(run())
+
+
+def test_a_segment_of_an_ended_meeting_never_lands_in_the_next_one(tmp_path, monkeypatch):
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.proactive = False
+
+    async def run():
+        a.start_meeting()
+        ended = a.transcript
+        a.on_segment(seg("User", "Erstes Meeting.", time.monotonic()))
+        a.stop_meeting()
+        # The VAD ends the utterance that was open at the stop: still the ended meeting's.
+        a.on_segment(seg("User", "Noch im ersten.", time.monotonic()))
+        # Cut before the next start, transcribed after it (the STT engine was already closed).
+        # Clearly earlier: Windows' monotonic clock ticks every ~15.6 ms, and a chunk cut in
+        # the same tick as the start is kept on purpose (real speech is never dropped).
+        stale = seg("User", "Zu spät.", time.monotonic() - 1.0)
+        a.start_meeting()
+        a.on_segment(stale)
+        a.on_segment(seg("User", "Zweites Meeting.", time.monotonic()))
+        await a.stop_meeting()
+        return ended
+
+    ended = asyncio.run(run())
+    assert [s.text for s in ended.segments] == ["Erstes Meeting.", "Noch im ersten."]
+    assert [s.text for s in a.transcript.segments] == ["Zweites Meeting."]
+    assert "Zu spät." not in [e.get("text") for e in events]
+
+
+def test_an_audio_error_leaves_the_stt_worker_closed(tmp_path, monkeypatch):
+    def broken():
+        raise RuntimeError("'parec' not found")
+
+    worker = FakeSttWorker()
+    a, _ = _meeting_assistant(tmp_path, monkeypatch, broken, worker.open, worker.close)
+    a.start_meeting()
+    assert "open" not in worker.calls
 
 
 def test_meeting_audio_error_is_reported_not_fatal(tmp_path, monkeypatch):
@@ -590,8 +788,9 @@ def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_pa
 
     async def run():
         a.start_meeting()
-        a.on_segment(seg("Participant", "Was kostet die Website?", 1.0))
-        a.on_segment(seg("User", "Ab 999 Euro.", 3.0))
+        t0 = time.monotonic()  # Segment.t_end: cut during the meeting
+        a.on_segment(seg("Participant", "Was kostet die Website?", t0 + 1.0))
+        a.on_segment(seg("User", "Ab 999 Euro.", t0 + 3.0))
         a._card({"type": "suggestion", "trigger": "Preisfrage", "ts": 0,
                  "suggestions": [{"text": "Das hängt vom Umfang ab."}]})
         a._card({"type": "answer", "query": "What now?", "ts": 0, "suggestions": [{"text": "Wait."}]})
@@ -936,7 +1135,9 @@ def _transliterated_meeting(tmp_path, monkeypatch):
 
     async def run():
         a.start_meeting()
-        for s in (_urdu(), seg("User", "Guten Tag.", 3.0), _urdu(text="ٹھیک ہوں", t_end=6.0)):
+        t0 = time.monotonic()  # Segment.t_end: cut during the meeting
+        for s in (_urdu(t_end=t0 + 1.0), seg("User", "Guten Tag.", t0 + 3.0),
+                  _urdu(text="ٹھیک ہوں", t_end=t0 + 6.0)):
             a.on_segment(s)
         await _drain()
         await a.stop_meeting()  # too few words for a memory call
@@ -979,7 +1180,7 @@ def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, 
 
     async def run():
         a.start_meeting()
-        a.on_segment(_urdu())
+        a.on_segment(_urdu(t_end=time.monotonic()))
         await asyncio.sleep(0)  # the transliteration call has started
         await a.stop_meeting()
 

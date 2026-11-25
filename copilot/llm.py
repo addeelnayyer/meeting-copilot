@@ -79,6 +79,7 @@ class LLM:
         self.note = ""  # why the primary is currently skipped, shown in the UI
         self.ollama_models = []  # installed, refreshed by check_ollama()
         self.ollama_note = ""  # Ollama not running / model missing, shown in the UI
+        self._warming = None  # the fallback's warm-up task in this run, None while cold
         self.primary = self.fallback
         self.set_primary(config.LLM_PROVIDER)
 
@@ -87,6 +88,8 @@ class LLM:
         "ollama:<model>" also switches the Ollama model (used as the fallback as well)."""
         provider_id, _, model = provider_id.partition(":")
         if provider_id == "ollama" and model:
+            if model != self.fallback.model:
+                self._warming = None  # a different model is not loaded yet
             self.fallback.model = model
             self._update_ollama_note()
         p = self.providers.get(provider_id)
@@ -142,13 +145,13 @@ class LLM:
         """
         start = time.monotonic()
         if not self.primary_available:
-            return await self.fallback.complete(system, prompt, schema), self.fallback.id, time.monotonic() - start
+            return await self._fallback(system, prompt, schema), self.fallback.id, time.monotonic() - start
 
         primary = self.primary
         tasks = {asyncio.ensure_future(primary.complete(system, prompt, schema)): primary}
         done, _ = await asyncio.wait(tasks, timeout=config.CLOUD_TIMEOUT_S)
         if not done:
-            tasks[asyncio.ensure_future(self.fallback.complete(system, prompt, schema))] = self.fallback
+            tasks[asyncio.ensure_future(self._fallback(system, prompt, schema))] = self.fallback
 
         error = None
         while tasks:
@@ -166,7 +169,7 @@ class LLM:
                 if provider is primary:
                     self._primary_failed(primary, error)
                     if not tasks:  # failed before the hedge started
-                        tasks[asyncio.ensure_future(self.fallback.complete(system, prompt, schema))] = self.fallback
+                        tasks[asyncio.ensure_future(self._fallback(system, prompt, schema))] = self.fallback
         raise error
 
     def _primary_failed(self, provider, error):
@@ -187,4 +190,26 @@ class LLM:
         return parse_json(text), engine, secs
 
     async def warmup(self):
-        await self.fallback.warmup()
+        """Load the local LLM at startup or on a switch, but only when it is the primary LLM.
+        With a cloud primary it is loaded on the first request it gets (see `_fallback`)."""
+        if self.primary is self.fallback:
+            await self._warm_fallback()
+
+    async def _warm_fallback(self):
+        """The fallback's warm-up, run once per run and model; concurrent callers share it. A
+        failed one is reported and not kept, so the next caller tries again."""
+        if self._warming is None:
+            self._warming = asyncio.ensure_future(self.fallback.warmup())
+            self._warming.add_done_callback(self._forget_failed_warm_up)
+        try:
+            await asyncio.shield(self._warming)  # a cancelled hedge must not cancel the warm-up
+        except Exception as e:  # the request itself is still tried
+            print(f"Ollama warm-up failed ({type(e).__name__}: {e})")
+
+    def _forget_failed_warm_up(self, task):
+        if self._warming is task and (task.cancelled() or task.exception() is not None):
+            self._warming = None
+
+    async def _fallback(self, system, prompt, schema):
+        await self._warm_fallback()
+        return await self.fallback.complete(system, prompt, schema)

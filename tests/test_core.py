@@ -731,7 +731,9 @@ def test_a_segment_of_an_ended_meeting_never_lands_in_the_next_one(tmp_path, mon
         # The VAD ends the utterance that was open at the stop: still the ended meeting's.
         a.on_segment(seg("User", "Noch im ersten.", time.monotonic()))
         # Cut before the next start, transcribed after it (the STT engine was already closed).
-        stale = seg("User", "Zu spät.", time.monotonic())
+        # Clearly earlier: Windows' monotonic clock ticks every ~15.6 ms, and a chunk cut in
+        # the same tick as the start is kept on purpose (real speech is never dropped).
+        stale = seg("User", "Zu spät.", time.monotonic() - 1.0)
         a.start_meeting()
         a.on_segment(stale)
         a.on_segment(seg("User", "Zweites Meeting.", time.monotonic()))

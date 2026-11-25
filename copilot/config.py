@@ -71,7 +71,7 @@ ECHO_SIMILARITY = 80
 # --- LLM ---
 # The LLM, a cloud provider (switchable live in the UI): gemini | claude | openai | grok | custom
 LLM_PROVIDER = _env("LLM_PROVIDER", "gemini")
-CLOUD_HARD_TIMEOUT_S = 15  # a cloud call is abandoned (counted as an error) after this
+CLOUD_HARD_TIMEOUT_S = 15  # a cloud call is abandoned after this
 RATE_LIMIT_PAUSE_S = 60  # a 429 without a retry delay pauses the provider this long
 # Settings of the removed local LLM; __main__ prints a hint when one is still set.
 IGNORED_SETTINGS = [n for n in ("OLLAMA_URL", "OLLAMA_MODEL", "CLOUD_TIMEOUT", "GEMINI_TIMEOUT") if os.environ.get(n)]
@@ -145,20 +145,20 @@ WINDOW_SIZE = (520, 900)
 # --- Hotkeys ---
 # Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label
 # and question in each UI language (the question is sent to the LLM and repeated on the answer card).
-# The "summary" preset folds the meeting memory instead and shows it as its card.
+# action: "ask" sends the question, "summary" folds the meeting memory and shows it as its card.
 PRESETS = [
-    {"id": "answer", "hotkey": "ctrl+alt+1",
+    {"id": "answer", "action": "ask", "hotkey": "ctrl+alt+1",
      "label": {"en": "What should I answer?", "de": "Was antworten?"},
      "query": {"en": "What should I answer now?", "de": "Was soll ich jetzt antworten?"}},
-    {"id": "questions", "hotkey": "ctrl+alt+2",
+    {"id": "questions", "action": "ask", "hotkey": "ctrl+alt+2",
      "label": {"en": "Questions", "de": "Fragen"},
      "query": {"en": "Which questions should I ask now, given what was said?",
                "de": "Welche Fragen sollte ich nach dem Gesagten jetzt stellen?"}},
-    {"id": "weak_points", "hotkey": "ctrl+alt+3",
+    {"id": "weak_points", "action": "ask", "hotkey": "ctrl+alt+3",
      "label": {"en": "Weak points", "de": "Schwächen"},
      "query": {"en": "Point out the weak points in their offer or argument.",
                "de": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."}},
-    {"id": "summary", "hotkey": "ctrl+alt+4",
+    {"id": "summary", "action": "summary", "hotkey": "ctrl+alt+4",
      "label": {"en": "Summary", "de": "Zusammenfassung"},
      "query": {"en": "Summary of the meeting so far", "de": "Zusammenfassung des Meetings bis jetzt"}},
 ]

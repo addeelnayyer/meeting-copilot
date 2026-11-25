@@ -111,7 +111,7 @@
 <body>
 <header>
   <select id="provider" data-t-title="provider.title"></select>
-  <span id="engine" class="badge" data-t-title="engine.title">-</span>
+  <span id="engine" class="badge cloud" data-t-title="engine.title">-</span>
   <span id="lat"></span>
   <span id="cnote" style="color:var(--warn)"></span>
   <span id="stt" class="badge" data-t="stt.idle"></span>
@@ -389,8 +389,7 @@ const handlers = {
   facts: (ev) => { $("facts").textContent = ev.text; },
   memory: (ev) => { $("memory").textContent = ev.text || t("none_yet"); $("memory-err").textContent = "";
     $("memory-until").textContent = ev.until ? t("memory.until", { time: hhmm(ev.until) }) : ""; },
-  engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
-    e.className = "badge cloud";
+  engine: (ev) => { $("engine").textContent = engineName(ev.engine);
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
   stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : ev.idle ? "stt.idle" : "stt.loading");
     e.className = "badge" + (ev.ready || ev.idle ? "" : " off"); e.title = ev.engine || "";

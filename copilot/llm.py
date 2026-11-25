@@ -97,12 +97,10 @@ class LLM:
         """Returns (text, provider_id, seconds). schema set -> JSON mode. Raises on failure."""
         provider = self.primary
         if provider is None:
-            self.note = t("llm.none")
-            raise UiError("llm.none")
+            raise self._fail(UiError("llm.none"))
         wait = self._paused_until - time.monotonic()
         if wait > 0:
-            self.note = t("llm.quota", provider=provider.label, minutes=_minutes(wait))
-            raise UiError("llm.quota", provider=provider.label, minutes=_minutes(wait))
+            raise self._fail(UiError("llm.quota", provider=provider.label, minutes=_minutes(wait)))
         start = time.monotonic()
         try:
             text = await provider.complete(system, prompt, schema)
@@ -114,14 +112,19 @@ class LLM:
             self.note = ""
         return text, provider.id, time.monotonic() - start
 
+    def _fail(self, err):
+        """Show `err` as the note; returns it for the caller to raise."""
+        self.note = ui_text(err)
+        return err
+
     def _failed(self, provider, error):
         print(f"{provider.label} failed ({type(error).__name__}: {str(error)[:300]})")
         wait = provider.retry_after(error)
         if wait is not None:
             self._paused_until = time.monotonic() + wait
-            self.note = t("llm.quota", provider=provider.label, minutes=_minutes(wait))
+            self._fail(UiError("llm.quota", provider=provider.label, minutes=_minutes(wait)))
         else:
-            self.note = t("llm.failed", provider=provider.label, error=ui_text(error)[:200])
+            self._fail(UiError("llm.failed", provider=provider.label, error=ui_text(error)[:200]))
 
     async def generate_json(self, system, prompt, schema=SUGGESTION_SCHEMA):
         text, engine, secs = await self.generate(system, prompt, schema)

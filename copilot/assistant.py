@@ -10,10 +10,10 @@ loop.call_soon_threadsafe(assistant.on_segment, seg).
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 
 from . import config, export, strings
 from .audio import PARTICIPANT
-from . import memory as meeting_memory
 from .memory import Memory
 from .strings import t, ui_text
 from .transcript import Transcript, new_session_path
@@ -73,10 +73,23 @@ def translation_target(lang):
     return mine if lang != mine else (config.LANGUAGES[1:] or ["en"])[0]
 
 
+@dataclass(eq=False)
+class Meeting:
+    """What belongs to one meeting. A stopped meeting's objects are still saved while the next
+    one may already run."""
+    transcript: Transcript
+    memory: Memory
+    cards: list = field(default_factory=list)  # suggestions and answers, for the meeting record
+    started: float = None  # time.time() at the start
+    # time.monotonic() at the start, the clock of Segment.t_end: an earlier segment was cut in an
+    # ended meeting.
+    since: float = float("-inf")
+    transliterations: set = field(default_factory=set)  # the running ones, awaited by the record
+
+
 class Assistant:
     def __init__(self, transcript, facts, kb, llm, emit, memory, open_capture=None, open_stt=None, close_stt=None):
-        self.transcript = transcript
-        self.memory = memory
+        self.meeting = Meeting(transcript, memory)
         self.facts = facts
         self.kb = kb
         self.llm = llm
@@ -86,14 +99,12 @@ class Assistant:
         self.proactive = False  # off at every meeting start
         self.translate = False
         self._one_at_a_time = asyncio.Lock()  # translations and transliterations, one at a time
-        self._transliterations = set()  # this meeting's running ones, awaited by the record
         self.engine = "-"
         self._timer = None
         self._pending_since = None
         self._running = False
         self._again = False
         self._last_trigger = ("", 0.0)  # (trigger, time) of the last proactive card
-        self._folds = {}  # meeting memory -> its running fold (one at a time per meeting)
         self.open_capture = open_capture  # () -> Capture, opened on the first meeting start
         self.capture = None
         # The STT worker holds an engine only during a meeting: () -> None each, only signalling it.
@@ -102,24 +113,32 @@ class Assistant:
         self.active = False  # a meeting is running: the participants are being listened to
         self.mic_on = True
         self.audio_error = ""
-        self.cards = []  # suggestions and answers of this meeting, for the meeting record
-        self.started = None
-        # time.monotonic() at the start of the meeting, the clock of Segment.t_end: an earlier
-        # segment was cut in an ended meeting.
-        self._since = float("-inf")
 
     # --- meeting ---------------------------------------------------------------
+    @property
+    def transcript(self):
+        return self.meeting.transcript
+
+    @property
+    def memory(self):
+        return self.meeting.memory
+
+    def _current(self, meeting):
+        """True while `meeting` is the latest one (running, or stopped with no new one started):
+        the one the window shows."""
+        return self.meeting is meeting
+
+    def _ongoing(self, meeting):
+        """True while `meeting` runs."""
+        return self.active and self._current(meeting)
+
     def start_meeting(self):
         """New session with a fresh transcript and memory (the facts sheet is kept)."""
         if self.active:
             self.stop_meeting()
         session = new_session_path()
-        self.transcript = Transcript(session)
-        self.memory = Memory(session.with_suffix(".memory.md"))
-        self.cards = []
-        self._transliterations = set()
-        self.started = time.time()
-        self._since = time.monotonic()
+        self.meeting = Meeting(Transcript(session), Memory(session.with_suffix(".memory.md")),
+                               started=time.time(), since=time.monotonic())
         self.emit({"type": "reset"})
         self.emit(self.memory.event())
         self.set_mode(proactive=False)  # no LLM call unless asked, until turned on for this meeting
@@ -132,25 +151,22 @@ class Assistant:
         """Returns the task that saves the meeting record (awaited on shutdown)."""
         self.active = False
         self._apply_audio()
-        return asyncio.ensure_future(self._save(self.transcript, self.memory, self.cards, self.started,
-                                                self._transliterations))
+        return asyncio.ensure_future(self._save(self.meeting))
 
-    async def _save(self, transcript, memory, cards, started, transliterations):
+    async def _save(self, meeting):
         """Fold the segments after the checkpoint into the meeting memory once (after a fold still
         running), however few, and let the queued transliterations land, all within STOP_LIMIT_S,
         then write the meeting record. A new meeting may already be running, so this works on the
         old meeting's objects."""
-        current = lambda: self.transcript is transcript  # noqa: E731
         ended = time.time()
-        fold = asyncio.ensure_future(self._fold_next(transcript, memory, min_words=1, final=True))
-        await asyncio.wait({fold, *transliterations}, timeout=STOP_LIMIT_S)
+        fold = asyncio.ensure_future(self._stop_fold(meeting))
+        await asyncio.wait({fold, *meeting.transliterations}, timeout=STOP_LIMIT_S)
         fold.cancel()  # still running: save with the meeting memory so far
-        if running := self._folds.get(memory):
-            running.cancel()  # nothing writes this meeting's memory after its record
-        path = export.write(transcript, memory, self.facts, cards, started, ended)
+        meeting.memory.cancel()  # nothing writes this meeting's memory after its record
+        path = export.write(meeting.transcript, meeting.memory, self.facts, meeting.cards, meeting.started, ended)
         if path:
             print(f"Saved:    {path}")
-            if current():
+            if self._current(meeting):
                 self.emit({"type": "saved", "path": str(path)})
 
     def set_mic(self, on):
@@ -182,7 +198,7 @@ class Assistant:
 
     # --- input ---------------------------------------------------------------
     def on_segment(self, seg):
-        if seg.t_end < self._since:
+        if seg.t_end < self.meeting.since:
             # Cut before this meeting started, transcribed after it: the ended meeting's last
             # words (its STT engine closed before the VAD sent them). Never this meeting's.
             print("STT:      a segment of the ended meeting arrived after the next start; dropped")
@@ -196,8 +212,8 @@ class Assistant:
                    "lang": seg.lang, "new_turn": new_turn, "stt_ms": round(seg.latency * 1000)})
         if seg.lang in config.TRANSLITERATE:
             task = asyncio.ensure_future(self._transliterate(seg))
-            self._transliterations.add(task)
-            task.add_done_callback(self._transliterations.discard)
+            self.meeting.transliterations.add(task)
+            task.add_done_callback(self.meeting.transliterations.discard)
         if seg.source != PARTICIPANT:
             return
         if self.translate:
@@ -271,7 +287,7 @@ class Assistant:
             return  # same point as the card on screen: don't replace it
         self._last_trigger = (trigger.lower(), time.time())
         self._card({"type": "suggestion", "trigger": trigger, "suggestions": self._limit(suggestions),
-                    "engine": engine, "ms": round(secs * 1000), "ts": asked})
+                    **self._timing(engine, secs, asked)})
 
     # --- push-to-ask -----------------------------------------------------------
     async def ask(self, query):
@@ -296,60 +312,61 @@ class Assistant:
         self._merge_facts(result)
         self._card({"type": "answer", "query": query, "trigger": result.get("trigger", ""),
                     "suggestions": self._limit(result.get("suggestions") or []),
-                    "engine": engine, "ms": round(secs * 1000), "ts": asked})
+                    **self._timing(engine, secs, asked)})
         self._fold_in_background()
 
     # --- meeting memory ----------------------------------------------------------
     async def summary(self, query):
         """Fold now and show the meeting memory as the card (no call when nothing new was said)."""
-        asked = time.time()
+        asked, meeting = time.time(), self.meeting
         self.emit({"type": "asking", "query": query})
-        done = await self._fold_next(self.transcript, self.memory, asked=True)
-        if done is False:
-            return  # the error is shown
+        try:
+            done = await self._fold(meeting)
+        except Exception as e:
+            self._fold_failed(meeting, e, asked=True)  # ends this request
+            return
         engine, secs = done or ("", 0.0)
         # Not recorded as a card: the meeting record holds the meeting memory itself.
         self.emit({"type": "answer", "summary": True, "query": query, "trigger": "",
-                   "suggestions": [{"text": self.memory.text or t("record.no_summary")}],
-                   "engine": engine, "ms": round(secs * 1000), "ts": asked})
+                   "suggestions": [{"text": meeting.memory.text or t("record.no_summary")}],
+                   **self._timing(engine, secs, asked)})
 
     def _fold_in_background(self):
-        """Fold the segments after the checkpoint, unless a fold already runs (the next one takes
-        what this one leaves)."""
-        asyncio.ensure_future(self._fold_next(self.transcript, self.memory, if_idle=True))
+        """After an answer: fold the segments after the checkpoint, unless a fold already runs
+        (the next one takes what this one leaves)."""
+        async def fold(meeting):
+            if not meeting.memory.folding():
+                await self._fold_quietly(meeting)
+        asyncio.ensure_future(fold(self.meeting))
 
-    async def _fold_next(self, transcript, memory, min_words=None, if_idle=False, final=False, asked=False):
-        """The only way a fold starts, so at most one runs per meeting memory: a running fold is
-        waited for, then what is still new is folded (with if_idle nothing is done instead). Only
-        the final fold at the stop touches an ended meeting's memory. Returns as _fold_memory."""
-        while (running := self._folds.get(memory)) and not running.done():
-            if if_idle:
-                return None
-            await asyncio.wait({running})
-        if not final and not (self.active and self.memory is memory):
-            return None
-        task = self._folds[memory] = asyncio.ensure_future(self._fold_memory(transcript, memory, min_words, asked))
-        task.add_done_callback(lambda done: self._folds.get(memory) is done and self._folds.pop(memory))
-        return await task
+    async def _stop_fold(self, meeting):
+        """At the stop: fold the ended meeting's rest once (after a running fold), however few words."""
+        await self._fold_quietly(meeting, min_words=1, wanted=lambda: True)
 
-    async def _fold_memory(self, transcript, memory, min_words=None, asked=False):
-        """One fold: (engine, secs), None when skipped as too short, False when it failed. Events
-        only reach the window while this is the running meeting's memory. The error of a fold the
-        user asked for (Summary) ends that request; any other carries source "memory", so the
-        window does not end a request in flight on it."""
-        current = lambda: self.memory is memory  # noqa: E731
+    async def _fold_quietly(self, meeting, **kwargs):
         try:
-            done = await meeting_memory.fold(self.llm, memory, transcript.segments, min_words)
+            await self._fold(meeting, **kwargs)
         except Exception as e:
-            print(f"Memory:   {e}")
-            if current():
-                self.emit({"type": "error", "text": t("memory.failed", error=ui_text(e)),
-                           **({} if asked else {"source": "memory"})})
-            return False
-        if done and current():
-            engine, secs = done
-            self.emit(memory.event(engine=engine, ms=round(secs * 1000)))
+            self._fold_failed(meeting, e)
+
+    async def _fold(self, meeting, min_words=config.MEMORY_MIN_WORDS, wanted=None):
+        """The one fold routine, so at most one fold runs per meeting memory: (engine, secs), or
+        None when skipped; an LLM failure is raised. Unless `wanted` says otherwise, nothing is
+        folded once the meeting has stopped. The memory event reaches the window while this is
+        the current meeting."""
+        done = await meeting.memory.fold(self.llm, meeting.transcript.segments, min_words,
+                                         wanted or (lambda: self._ongoing(meeting)))
+        if done and self._current(meeting):
+            self.emit(meeting.memory.event(**self._timing(*done)))
         return done
+
+    def _fold_failed(self, meeting, error, asked=False):
+        """The error of a fold the user asked for (Summary) ends that request; any other carries
+        source "memory", so the window does not end a request in flight on it."""
+        print(f"Memory:   {error}")
+        if self._current(meeting):
+            self.emit({"type": "error", "text": t("memory.failed", error=ui_text(error)),
+                       **({} if asked else {"source": "memory"})})
 
     # --- translation / transliteration ------------------------------------------
     async def _translate(self, seg):
@@ -360,16 +377,17 @@ class Assistant:
                        **result})
 
     async def _transliterate(self, seg):
+        transcript = self.transcript
         result = await self._plain(seg, TRANSLITERATE_SYSTEM.format(lang=seg.lang), "Transliteration")
         if result:
-            self.transcript.transliterate(seg, result["text"])
+            transcript.transliterate(seg, result["text"])
             self.emit({"type": "transliteration", "id": seg.id, "source": seg.source, **result})
 
     async def _plain(self, seg, system, label):
         """Plain-text LLM call for one line: {text, engine, ms}, or None when skipped or failed.
         A line retracted as an echo, or from a meeting that has ended, is skipped."""
-        transcript, queued = self.transcript, time.monotonic()
-        gone = lambda: seg.retracted or self.transcript is not transcript  # noqa: E731
+        meeting, queued = self.meeting, time.monotonic()
+        gone = lambda: seg.retracted or not self._current(meeting)  # noqa: E731
         # One at a time: a provider may not keep up with every line in parallel, and a pile-up
         # made all of them time out. Lines that waited too long are skipped to catch up.
         async with self._one_at_a_time:
@@ -380,7 +398,7 @@ class Assistant:
             except Exception as e:
                 self.emit({"type": "error", "text": f"{label}: {ui_text(e)}"})
                 return None
-        return None if gone() else {"text": text.strip(), "engine": engine, "ms": round(secs * 1000)}
+        return None if gone() else {"text": text.strip(), **self._timing(engine, secs)}
 
     # --- toggles / helpers ---------------------------------------------------
     def set_mode(self, proactive=None, translate=None):
@@ -395,15 +413,15 @@ class Assistant:
         """The preset buttons in the UI language (English when the language has no presets)."""
         def localized(texts):
             return texts.get(strings.language()) or texts["en"]
-        return [{"id": p["id"], "hotkey": p["hotkey"], "label": localized(p["label"]),
+        return [{"id": p["id"], "hotkey": p["hotkey"], "action": p["action"], "label": localized(p["label"]),
                  "query": localized(p["query"])} for p in config.PRESETS]
 
     async def run_preset(self, preset_id):
-        """A preset button or hotkey: Summary folds the meeting memory, the others ask their question."""
+        """A preset button or hotkey: its action, "ask" (its question) or "summary" (fold the meeting memory)."""
         preset = next((p for p in self.presets() if p["id"] == preset_id), None)
         if preset is None:
             return
-        await (self.summary(preset["query"]) if preset_id == "summary" else self.ask(preset["query"]))
+        await {"ask": self.ask, "summary": self.summary}[preset["action"]](preset["query"])
 
     def set_provider(self, provider_id):
         self.llm.set_primary(provider_id)
@@ -415,12 +433,18 @@ class Assistant:
 
     def _card(self, event):
         if self.active:
-            self.cards.append(event)
+            self.meeting.cards.append(event)
         self.emit(event)
 
     def _engine(self, engine, secs):
         self.engine = engine
-        self.emit({"type": "engine", "engine": engine, "ms": round(secs * 1000)})
+        self.emit({"type": "engine", **self._timing(engine, secs)})
+
+    @staticmethod
+    def _timing(engine, secs, asked=None):
+        """The engine and latency an event carries, and `ts`, the time a card was asked."""
+        timing = {"engine": engine, "ms": round(secs * 1000)}
+        return timing if asked is None else {**timing, "ts": asked}
 
     def _merge_facts(self, result):
         new = result.get("new_facts")

@@ -282,8 +282,7 @@ def test_memory_follows_reply_language(tmp_path, monkeypatch):
     # the panel and the meeting record show the memory as written
     [memory] = [e for e in events if e["type"] == "memory" and e["text"]]
     assert memory["text"] == reply
-    [record] = (tmp_path / "meetings").iterdir()
-    assert reply in record.read_text(encoding="utf-8")
+    assert reply in _record(tmp_path)
 
 
 def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
@@ -611,6 +610,12 @@ def _recording(a, events, tmp_path, monkeypatch):
     return a, events
 
 
+def _record(tmp_path):
+    """The text of the one meeting record."""
+    [record] = (tmp_path / "meetings").iterdir()
+    return record.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("lang, lines", [
     ("en", ["## Summary", "(none, the conversation was too short)", "## Facts", "(none yet)",
             "## Suggestions and answers", "Question: What now?", "## Transcript",
@@ -634,10 +639,10 @@ def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_pa
         await a.stop_meeting()
 
     asyncio.run(run())
-    [record] = (tmp_path / "meetings").iterdir()
-    text = record.read_text(encoding="utf-8")
+    text = _record(tmp_path)
     for line in lines + ["Preisfrage", "Das hängt vom Umfang ab."]:  # LLM-written text stays as written
         assert line in text
+    [record] = (tmp_path / "meetings").iterdir()
     assert events[-1] == {"type": "saved", "path": str(record)}
 
 
@@ -654,11 +659,17 @@ def test_empty_meeting_writes_no_record(tmp_path, monkeypatch):
 
 # --- languages -----------------------------------------------------------------------
 class RecordingLLM:
+    """Answers plain calls (generate) with reply(prompt) after `delay`, or raises `error`;
+    records every call as (system, prompt)."""
+
     def __init__(self, reply=lambda prompt: "Roman " + prompt, delay=0.0, error=None):
         self.calls, self.reply, self.delay, self.error = [], reply, delay, error
 
-    async def generate(self, system, prompt):
+    def _called(self, kind, system, prompt):
         self.calls.append((system, prompt))
+
+    async def generate(self, system, prompt):
+        self._called("fold", system, prompt)  # PromptLLM's plain calls are its folds
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
@@ -851,61 +862,49 @@ def test_the_summary_preset_with_nothing_new_shows_the_memory_without_a_call(tmp
 @pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),
                                             ("de", "Was soll ich jetzt antworten?")])
 def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp_path, monkeypatch):
-    from copilot import hotkeys
-
     monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
-    prompts = []
-
-    class FakeLLM:
-        async def generate_json(self, system, prompt):
-            prompts.append(prompt)
-            return {"trigger": "Answer", "suggestions": [{"text": "Yes."}], "new_facts": []}, "claude", 0.1
-
-    a.llm = FakeLLM()
-    a.kb = SimpleNamespace(context=lambda q: "")
-    bound = {}
-    monkeypatch.setattr(hotkeys, "_bind", bound.update)
-
-    async def press():
-        hotkeys.register(asyncio.get_running_loop(), a, events.append, SimpleNamespace(supported=False))
-        bound["ctrl+alt+1"]()  # on the hotkey thread in the app
-        for _ in range(20):
-            await asyncio.sleep(0.01)
-
-    asyncio.run(press())
-    assert prompts[0].endswith(f"[USER QUESTION]\n{question}")
+    a, events, _ = _on_demand(tmp_path, monkeypatch)
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+1"))
+    [prompt] = a.llm.prompts("ask")
+    assert prompt.endswith(f"[USER QUESTION]\n{question}")
     [card] = [e for e in events if e["type"] == "answer"]
     assert card["query"] == question
 
 
 # --- on demand: checkpoint and fold --------------------------------------------------
-class PromptLLM:
-    """Answers suggestions (generate_json) and writes the meeting memory (generate), recording
-    every call as (kind, system, prompt). `fold_errors` fail that many memory calls first."""
+class PromptLLM(RecordingLLM):
+    """Also answers suggestions (generate_json), and its plain calls write the meeting memory;
+    records every call as (kind, system, prompt, time). `fold_errors` fail that many memory calls
+    first."""
 
     def __init__(self, fold_errors=0, delay=0.0, fold_delay=0.0):
-        self.calls, self.fold_errors, self.delay, self.folds = [], fold_errors, delay, 0
-        self.fold_delay, self.folding, self.most_folding = fold_delay, 0, 0  # folds in flight at once
+        super().__init__(reply=self._memory, delay=fold_delay)
+        self.ask_delay, self.fold_errors, self.folds = delay, fold_errors, 0
+        self.folding, self.most_folding = 0, 0  # folds in flight at once
 
-    async def generate_json(self, system, prompt):
-        self.calls.append(("ask", system, prompt, time.time()))
-        await asyncio.sleep(self.delay)
-        return {"trigger": "Answer", "suggestions": [{"text": "Say yes."}], "new_facts": []}, "claude", 0.1
+    def _called(self, kind, system, prompt):
+        self.calls.append((kind, system, prompt, time.time()))
 
-    async def generate(self, system, prompt):
-        self.calls.append(("fold", system, prompt, time.time()))
-        self.folding += 1
-        self.most_folding = max(self.most_folding, self.folding)
-        try:
-            await asyncio.sleep(self.fold_delay)
-        finally:
-            self.folding -= 1
+    def _memory(self, prompt):
         if self.fold_errors:
             self.fold_errors -= 1
             raise RuntimeError("overloaded")
         self.folds += 1
-        return f"- Memory {self.folds}", "claude", 0.2
+        return f"- Memory {self.folds}"
+
+    async def generate_json(self, system, prompt):
+        self._called("ask", system, prompt)
+        await asyncio.sleep(self.ask_delay)
+        return {"trigger": "Answer", "suggestions": [{"text": "Say yes."}], "new_facts": []}, "claude", 0.1
+
+    async def generate(self, system, prompt):
+        self.folding += 1
+        self.most_folding = max(self.most_folding, self.folding)
+        try:
+            text, engine, _ = await super().generate(system, prompt)
+        finally:
+            self.folding -= 1
+        return text, engine, 0.2
 
     def prompts(self, kind):
         return [prompt for k, _, prompt, _ in self.calls if k == kind]
@@ -1086,11 +1085,6 @@ def test_cards_carry_the_time_they_were_asked(tmp_path, monkeypatch):
     [card] = [e for e in events if e["type"] == "answer"]
     [(_, _, _, called)] = a.llm.calls
     assert before <= card["ts"] <= called  # when asked, not when the answer came
-
-
-def _record(tmp_path):
-    [record] = (tmp_path / "meetings").iterdir()
-    return record.read_text(encoding="utf-8")
 
 
 def test_stopping_a_meeting_folds_the_rest_once_into_the_record(tmp_path, monkeypatch):
@@ -1306,8 +1300,7 @@ def _transliterated_meeting(tmp_path, monkeypatch):
 
 def test_the_meeting_record_shows_the_transliteration_and_the_original_elsewhere(tmp_path, monkeypatch):
     _transliterated_meeting(tmp_path, monkeypatch)
-    [record] = (tmp_path / "meetings").iterdir()
-    text = record.read_text(encoding="utf-8")
+    text = _record(tmp_path)
     assert "**Teilnehmer:** Aap kaise hain" in text and "آپ کیسے ہیں" not in text
     assert "**Du:** Guten Tag." in text and "**Teilnehmer:** ٹھیک ہوں" in text
 
@@ -1343,5 +1336,4 @@ def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, 
         await a.stop_meeting()
 
     asyncio.run(run())
-    [record] = (tmp_path / "meetings").iterdir()
-    assert "**Teilnehmer:** Roman آپ کیسے ہیں" in record.read_text(encoding="utf-8")
+    assert "**Teilnehmer:** Roman آپ کیسے ہیں" in _record(tmp_path)

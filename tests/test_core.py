@@ -119,12 +119,17 @@ class FakeProvider(Provider):
     def __init__(self, id, delay=0.0, error=None, configured=True):
         self.id, self.label, self.model = id, id.title(), f"{id}-model"
         self.delay, self.error, self._configured = delay, error, configured
+        self.calls = []  # "warmup" and "complete", in the order they reached the provider
 
     @property
     def configured(self):
         return self._configured
 
+    async def warmup(self):
+        self.calls.append("warmup")
+
     async def complete(self, system, prompt, schema=None):
+        self.calls.append("complete")
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
@@ -173,6 +178,43 @@ def test_gemini_quota_429_skips_primary_for_retry_delay(monkeypatch):
     _, engine, _ = asyncio.run(client.generate_json("s", "p"))
     assert engine == "ollama" and not client.primary_available
     assert "1042 min" in client.note
+
+
+def test_cloud_primary_does_not_warm_the_local_llm(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    asyncio.run(client.warmup())
+    assert client.fallback.calls == []
+
+
+def test_local_primary_is_warmed_at_startup(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client.set_primary("ollama")
+    asyncio.run(client.warmup())
+    assert client.fallback.calls == ["warmup"]
+
+
+def test_cloud_failure_warms_the_fallback_once_before_it_answers(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+
+    async def run():
+        first = await client.generate_json("s", "p")  # the cloud fails, the fallback answers
+        await client.generate_json("s", "p")
+        await client.generate_json("s", "p")  # breaker open: straight to the fallback
+        return first
+
+    _, engine, _ = asyncio.run(run())
+    assert engine == "ollama"
+    assert client.fallback.calls == ["warmup", "complete", "complete", "complete"]
+
+
+def test_hedge_warms_the_fallback_once_for_concurrent_requests(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.0)
+
+    async def run():
+        return await asyncio.gather(client.generate_json("s", "p"), client.generate_json("s", "p"))
+
+    assert [engine for _, engine, _ in asyncio.run(run())] == ["ollama", "ollama"]
+    assert client.fallback.calls == ["warmup", "complete", "complete"]
 
 
 def test_http_429_uses_retry_after_header():
@@ -549,6 +591,39 @@ def _meeting_assistant(tmp_path, monkeypatch, open_capture):
     events = []
     a = Assistant(Transcript(), Facts(tmp_path / "facts.json"), None, None, events.append, Memory(), open_capture)
     return a, events
+
+
+@pytest.mark.parametrize("choice, warmups", [
+    ("claude", []),  # a cloud primary leaves the local LLM unloaded
+    ("ollama", ["warmup"]),
+    ("ollama:qwen3:4b", ["warmup"]),
+])
+def test_switching_the_primary_to_the_local_llm_warms_it(choice, warmups, tmp_path, monkeypatch):
+    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
+    a.llm = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+
+    async def run():
+        a.set_provider(choice)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert a.llm.fallback.calls == warmups
+    assert events[-1]["type"] == "providers"
+
+
+def test_a_new_local_model_is_warmed_again(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+
+    async def run():
+        client.set_primary("ollama:qwen3:4b")
+        await client.warmup()
+        client.set_primary("ollama:qwen3:4b")  # same model: already loaded
+        await client.warmup()
+        client.set_primary("ollama:llama3.2:3b")
+        await client.warmup()
+
+    asyncio.run(run())
+    assert client.fallback.calls == ["warmup", "warmup"]
 
 
 def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import wave
 from pathlib import Path
@@ -19,6 +20,7 @@ from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
 from .strings import t
 
 HOST = "127.0.0.1"
+GB = 1024 ** 3
 
 SPECIAL_TOKEN = re.compile(r"<\|[^|]*\|>")
 
@@ -128,7 +130,11 @@ class Server:
         self.url = f"http://{HOST}:{port}"
         config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         self.log = config.SESSIONS_DIR / "whisperkit.log"
-        with open(self.log, "w", encoding="utf-8") as log:
+        # Appended to, so a replaced or restarted server keeps the earlier history.
+        with open(self.log, "a", encoding="utf-8") as log:
+            log.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} whisperkit-cli serve on port {port}, "
+                      f"model {model} ---\n")
+            log.flush()
             self.proc = subprocess.Popen(server_command(cli, model, port), stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT)
         atexit.register(self.close)
@@ -136,6 +142,15 @@ class Server:
     def check(self):
         if self.proc.poll() is not None:
             raise RuntimeError(f"whisperkit-cli exited with code {self.proc.returncode}, see {self.log}")
+
+    def rss(self):
+        """Resident memory of the child in bytes, from the system ps; None when unreadable."""
+        try:
+            out = subprocess.run(["ps", "-o", "rss=", "-p", str(self.proc.pid)], capture_output=True,
+                                 text=True, timeout=5).stdout
+            return int(out.strip()) * 1024
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
 
     def close(self):
         atexit.unregister(self.close)
@@ -148,9 +163,54 @@ class Server:
                 self.proc.wait()
 
 
+def _gb(size):
+    return "an unknown size" if size is None else f"{size / GB:.1f} GB"
+
+
+class _Replacement:
+    """A server being launched, made healthy and warmed up on its own thread (ADR 0001)."""
+
+    def __init__(self, engine):
+        self.cancel, self.done = threading.Event(), threading.Event()
+        self.result = self.error = None  # (server, http, rss after warm-up) | the exception
+        self.thread = threading.Thread(target=self._run, args=(engine,), name="whisperkit-replacement", daemon=True)
+        self.thread.start()
+
+    def _run(self, engine):
+        try:
+            server, http = engine._bring_up(self.cancel)
+            try:
+                engine._request(_silence(), config.LANGUAGES[0], http)
+                self.result = server, http, server.rss()
+            except BaseException:
+                http.close()
+                server.close()
+                raise
+        except Exception as e:
+            self.error = e
+        finally:
+            self.done.set()
+
+    def close(self):
+        """Stops it, and the server it started; waits for the thread."""
+        self.cancel.set()
+        self.thread.join()
+        if self.result:
+            server, http, _ = self.result
+            http.close()
+            server.close()
+
+
+def _silence():
+    """About 1 s of silence as a WAV: the warm-up request."""
+    return wav_bytes(np.zeros(config.SAMPLE_RATE, dtype=np.float32))
+
+
 class WhisperKitEngine:
     """STT engine on a whisperkit-cli server. launch() starts one (tests pass a fake) and returns
-    an object with url, check() and close()."""
+    an object with url, check(), rss() and close(). A server that has grown more than
+    WHISPERKIT_MAX_GROWTH_GB past its RAM after warm-up is replaced by a warmed one in the
+    background, and the switch happens between two requests (ADR 0001)."""
 
     name = "whisperkit"
 
@@ -162,25 +222,38 @@ class WhisperKitEngine:
         self._launch = launch
         self._restarted = False
         self.on_status = on_status or (lambda status: None)  # the restart, shown in the UI
+        self._replacement = None  # at most one at a time
         self._start()
         self._language = StickyLanguage()
 
     def _start(self):
-        self.server = self._launch()
-        self.http = httpx.Client(base_url=self.server.url, timeout=30)
-        try:
-            self._wait_healthy()
-        except BaseException:
-            self.close()
-            raise
+        self.server, self.http = self._bring_up()
+        self._baseline = None  # RSS after the server's first request (the warm-up on a fresh engine)
+        self._rss = None
+        self._requests = 0
 
-    def _wait_healthy(self):
+    def _bring_up(self, cancel=None):
+        """A launched, healthy server and its HTTP client; nothing is left running on failure."""
+        server = self._launch()
+        http = httpx.Client(base_url=server.url, timeout=30)
+        try:
+            self._wait_healthy(server, http, cancel)
+        except BaseException:
+            http.close()
+            server.close()
+            raise
+        return server, http
+
+    @staticmethod
+    def _wait_healthy(server, http, cancel=None):
         """The first start specializes the Core ML model for this chip, which can take minutes."""
         deadline = time.monotonic() + config.WHISPERKIT_START_TIMEOUT_S
         while True:
-            self.server.check()
+            server.check()
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("replacement cancelled")
             try:
-                if self.http.get("/health", timeout=2).status_code == 200:
+                if http.get("/health", timeout=2).status_code == 200:
                     return
             except httpx.TransportError:
                 pass
@@ -189,22 +262,63 @@ class WhisperKitEngine:
             time.sleep(0.2)
 
     def close(self):
+        if self._replacement is not None:
+            self._replacement.close()
+            self._replacement = None
+        self._close_server()
+
+    def _close_server(self):
         self.http.close()
         self.server.close()
 
     def warm_up(self):
         """About 1 s of silence, so the first meeting chunk does not pay for the first decode."""
-        self._post(wav_bytes(np.zeros(config.SAMPLE_RATE, dtype=np.float32)), config.LANGUAGES[0])
+        self._post(_silence(), config.LANGUAGES[0])
 
     def _post(self, wav, lang):
+        self._switch_if_ready()
         while True:  # after a restart: the chunk in flight again, on the new server
             try:
-                return self._request(wav, lang)
+                reply = self._request(wav, lang)
             # A timeout counts too: a server that takes 30 s for one chunk is as good as gone.
             except (httpx.TransportError, httpx.HTTPStatusError) as e:
                 if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
                     raise
                 self._restart(e)
+            else:
+                self._requests += 1
+                self._check_growth()
+                return reply
+
+    def _check_growth(self):
+        """Starts a replacement once the server has outgrown its RAM after warm-up by the limit."""
+        rss = self.server.rss()
+        if rss is None:
+            return
+        if self._baseline is None:
+            self._baseline = rss
+        self._rss = rss
+        if (rss - self._baseline > config.WHISPERKIT_MAX_GROWTH_GB * GB) and self._replacement is None:
+            self._replacement = _Replacement(self)
+
+    def _switch_if_ready(self):
+        """Between two requests: a warm replacement takes over and the old server is stopped; a
+        failed one is discarded, so the next request's check starts another."""
+        replacement = self._replacement
+        if replacement is None or not replacement.done.is_set():
+            return
+        self._replacement = None
+        replacement.thread.join()
+        if replacement.error is not None:
+            print(f"STT: replacing whisperkit-cli failed ({replacement.error}); it keeps serving, retrying later")
+            return
+        server, http, rss = replacement.result
+        print(f"STT: whisperkit-cli replaced after {self._requests} requests at {_gb(self._rss)} "
+              f"(warm-up {_gb(self._baseline)}); the new one holds {_gb(rss)}")
+        self._close_server()
+        self.server, self.http = server, http
+        self._baseline = self._rss = rss
+        self._requests = 0
 
     def _restart(self, error):
         """A crashed, unreachable or failing server is restarted once per run; the next failure is final."""
@@ -218,20 +332,20 @@ class WhisperKitEngine:
         self._restarted = True
         print(f"STT: whisperkit-cli failed ({reason}), restarting it")
         self.on_status({"ready": False, "engine": self.name, "note": t("stt.restarting", engine=self.name, reason=reason)})
-        self.close()
+        self._close_server()  # a replacement in progress carries on
         try:
             self._start()
         except Exception as e:
             raise EngineFailed(f"whisperkit-cli restart failed: {e}") from e
         self.on_status({"ready": True, "engine": self.name, "note": ""})
 
-    def _request(self, wav, lang):
+    def _request(self, wav, lang, http=None):
         # No prompt: WhisperKit pre-fills it through the decoder, which doubled latency and,
         # with temperature fallback off, set off repetition loops (step 0 in #1).
         data = {"model": config.WHISPERKIT_MODEL, "temperature": "0", "response_format": "verbose_json"}
         if lang:
             data["language"] = lang
-        r = self.http.post("/v1/audio/transcriptions", data=data,
+        r = (http or self.http).post("/v1/audio/transcriptions", data=data,
                            files={"file": ("chunk.wav", wav, "audio/wav")})
         r.raise_for_status()
         return r.json()

@@ -329,8 +329,7 @@ class Assistant:
     def set_provider(self, provider_id):
         self.llm.set_primary(provider_id)
         self.emit(self.llm.describe())
-        if provider_id.startswith("ollama:"):
-            asyncio.ensure_future(self.llm.fallback.warmup())
+        asyncio.ensure_future(self.llm.warmup())  # loads the local LLM only when it is now the primary
 
     @staticmethod
     def _limit(suggestions):

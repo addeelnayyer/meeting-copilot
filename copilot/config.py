@@ -57,6 +57,9 @@ WHISPERKIT_MODEL_PATH = _env("WHISPERKIT_MODEL_PATH", "")
 # For encoder and decoder: cpuAndGPU | cpuAndNeuralEngine | all | cpuOnly (GPU: ~0.3 s/chunk on an M4 Max)
 WHISPERKIT_COMPUTE_UNITS = _env("WHISPERKIT_COMPUTE_UNITS", "cpuAndGPU")
 WHISPERKIT_START_TIMEOUT_S = 300  # the first Core ML load specializes the model for this chip
+# The server leaks RAM per request; once it has grown this much past its size after warm-up, a
+# warmed replacement takes over between two requests (docs/adr/0001-recycle-whisperkit-server.md).
+WHISPERKIT_MAX_GROWTH_GB = float(_env("WHISPERKIT_MAX_GROWTH_GB", "1.5"))
 WHISPERKIT_MAX_COMPRESSION = 2.4  # segments above this gzip ratio are repetition loops
 
 # --- Transcript ---

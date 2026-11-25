@@ -21,4 +21,4 @@ Feature tickets in the [Echo ticket format](https://masrisystems.com/brain). New
 | 015 | [Free the STT model between meetings](completed/015_free-stt-model-between-meetings.md) | feature | completed |
 | 016 | [Warm up Ollama only when it is needed](completed/016_ollama-warm-up-only-when-needed.md) | feature | completed |
 | 017 | [Lighter English STT model on Apple Silicon](backlog/017_lighter-english-stt-model.md) | feature | proposed |
-| 018 | [Cloud-only LLM, called only on demand](backlog/018_cloud-only-on-demand-llm.md) | feature | ready-for-agent |
+| 018 | [Cloud-only LLM, called only on demand](completed/018_cloud-only-on-demand-llm.md) | feature | completed |

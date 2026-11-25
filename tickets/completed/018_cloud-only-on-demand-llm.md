@@ -3,7 +3,7 @@
 ## Meta
 - ID:             018
 - Typ:            feature
-- Status:         ready-for-agent
+- Status:         completed
 - Erstellt:       2026-11-25
 - Erstellt von:   Adeel Nayyer Sheikh
 - Verantwortlich: Adeel Nayyer Sheikh
@@ -119,3 +119,6 @@ LLM calls happen only on demand: when the user clicks a preset button, presses i
 - On 2026-11-25 the largest prompts in the Ollama log were about 20.7k tokens; a full hour of transcript after the checkpoint is about 12k tokens, which every supported cloud provider accepts, so no cap is set.
 - `GLOSSARY.md` already drops Local LLM and Fallback and defines Checkpoint.
 - Ticket 016's Ollama warm-up work is superseded by this ticket.
+
+## Kommentare
+- 2026-11-25: done on branch cloud-only-on-demand-llm. Unit tests pass (136); the window changes were not yet checked in a running app.

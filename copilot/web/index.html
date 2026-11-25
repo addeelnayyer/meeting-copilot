@@ -377,7 +377,7 @@ const handlers = {
     if (turn && !turn.querySelector(".seg")) turn.remove(); },
   suggestion,
   ui: (ev) => { readMs = ev.read_s * 1000; document.body.classList.toggle("single", ev.single); },
-  answer: (ev) => { busy(false); card(ev, true); },
+  answer: (ev) => { busy(false); $("err").textContent = ""; card(ev, true); },
   asking: (ev) => { busy(true); $("err").textContent = t("asking", { query: ev.query }); },
   mode: setMode,
   meeting: (ev) => { meeting = ev; renderMeeting(); },

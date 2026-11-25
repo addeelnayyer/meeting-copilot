@@ -232,7 +232,7 @@ class WhisperKitEngine:
 
     def _start(self):
         self.server, self.http = self._bring_up()
-        self._baseline = None  # RSS after the server's first request (the warm-up on a fresh engine)
+        self._baseline = None  # RSS after the server's first request, its warm-up
         self._rss = None
         self._requests = 0
 
@@ -339,8 +339,13 @@ class WhisperKitEngine:
         self._close_server()  # a replacement in progress carries on
         try:
             self._start()
+            # Warmed like a fresh engine, so the growth baseline is the RSS after a warm-up
+            # (ADR 0001). It costs one decode of 1 s of silence, about what the chunk in flight
+            # would otherwise pay for the new server's first decode.
+            self._request(_silence(), config.LANGUAGES[0])
         except Exception as e:
             raise EngineFailed(f"whisperkit-cli restart failed: {e}") from e
+        self._check_growth()
         self.on_status({"ready": True, "engine": self.name, "note": ""})
 
     def _request(self, wav, lang, http=None):

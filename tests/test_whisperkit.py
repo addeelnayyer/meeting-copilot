@@ -51,6 +51,7 @@ class FakeServer:
                 assert fields.pop("file").startswith(b"RIFF")
                 fields = {k: v.decode() for k, v in fields.items()}
                 fake.requests.append(fields)
+                fake.rss_bytes += fake.growth_per_request
                 self._send(fake.status, fake.reply(fields) if fake.status == 200 else {"error": "boom"})
 
             def _send(self, status, data):
@@ -66,6 +67,7 @@ class FakeServer:
         self.closed = self.dead = False
         self.status = 200  # of transcription replies
         self.rss_bytes = 2 * GB  # what rss() reports; tests grow it
+        self.growth_per_request = 0  # added to rss_bytes by every transcription request
         threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
 
     # The engine's view of a launched whisperkit-cli server.
@@ -296,6 +298,7 @@ class Launcher:
         self.launches = 0  # calls, failed ones included
         self.hold = threading.Event()  # cleared: a launch waits until it is set
         self.hold.set()
+        self.growth_per_request = 0  # of the servers launched from now on
 
     def __call__(self):
         self.launches += 1
@@ -303,6 +306,7 @@ class Launcher:
         if self.fail:
             raise RuntimeError("whisperkit-cli is not on the PATH")
         self.servers.append(FakeServer())
+        self.servers[-1].growth_per_request = self.growth_per_request
         return self.servers[-1]
 
 
@@ -514,6 +518,20 @@ def test_server_past_its_growth_limit_is_replaced_without_losing_a_chunk(worker,
     assert worker.launcher.launches == 2
     lines = [line for line in capsys.readouterr().out.splitlines() if "replaced" in line]
     assert len(lines) == 1 and "3.6 GB" in lines[0] and "2.0 GB" in lines[0]
+
+
+def test_after_a_crash_restart_growth_counts_from_the_new_servers_warm_up(worker):
+    worker.launcher.growth_per_request = 1 * GB  # every request of a server launched from now on
+    worker.launcher.servers[-1].kill()
+    assert worker.transcribe() == "Hello there."  # restarted, the chunk in flight sent again
+    restarted = worker.launcher.servers[1]
+    assert chunk_requests(restarted) == 1  # after a warm-up: RSS 3 GB, then 4 GB after the chunk
+    assert worker.launcher.launches == 2  # 1 GB past the warm-up: under the limit
+    worker.transcribe()  # 5 GB, 2 GB past the warm-up
+    deadline = time.monotonic() + 10
+    while worker.launcher.launches < 3:
+        assert time.monotonic() < deadline, "no replacement was started"
+        time.sleep(0.01)
 
 
 def test_failed_replacement_keeps_the_old_server_and_is_retried_without_using_the_crash_restart(worker):

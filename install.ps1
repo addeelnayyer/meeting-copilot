@@ -94,7 +94,4 @@ foreach ($Path in $Shortcuts) {
 Write-Host "Open $App from your Desktop or the Start Menu."
 
 # --- 5. Hints ---
-if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-    Write-Host "`nTip: install Ollama (https://ollama.com) for the offline fallback and pull a model, e.g.`n'ollama pull granite4:7b-a1b-h'. Any other installed model can be picked in the window."
-}
 Write-Host "`nDone. Put your notes as Markdown files in $Dir\knowledge_base,`nand AI keys and settings in $Dir\.env (both open from buttons in the window)."

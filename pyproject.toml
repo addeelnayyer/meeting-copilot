@@ -1,7 +1,7 @@
 [project]
 name = "meeting-copilot"
 version = "0.1.0"
-description = "Real-time local meeting copilot for Windows, Linux and macOS: mic + system audio capture, faster-whisper, cloud/Ollama suggestions"
+description = "Real-time local meeting copilot for Windows, Linux and macOS: mic + system audio capture, faster-whisper, cloud LLM suggestions"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "faster-whisper>=1.1",

@@ -205,7 +205,7 @@ _until_ctrl_c() { trap ':' INT; "$@" || true; trap - INT; }
 
 run_wizard() {
 
-TOTAL_STAGES=9
+TOTAL_STAGES=8
 cd "$(dirname "$0")/.."
 APP_URL="http://127.0.0.1:8765"
 LOG="sessions/wizard-run.log"
@@ -220,24 +220,6 @@ uv sync
 pause "Environment ready. Press Enter"
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
-stage "Ollama (local fallback model)"
-OLLAMA_MODEL=$(_existing OLLAMA_MODEL || true); OLLAMA_MODEL=${OLLAMA_MODEL:-granite4:7b-a1b-h}
-if ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null; then
-  warn "Ollama isn't running."
-  step "Start the Ollama app (menu bar llama icon), or run 'ollama serve' in another terminal."
-  open -a Ollama >/dev/null 2>&1 || true
-  pause "Press Enter once Ollama is running"
-fi
-if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$OLLAMA_MODEL"; then
-  say "Model $OLLAMA_MODEL is installed."
-elif confirm "Pull $OLLAMA_MODEL now (a few GB)?"; then
-  ollama pull "$OLLAMA_MODEL"
-else
-  SKIPPED+=("ollama pull $OLLAMA_MODEL (the window warns until a model is there)")
-fi
-pause
-
-# ── 3 ─────────────────────────────────────────────────────────────────────
 stage "Speech recognition engine"
 say "STT_ENGINE=auto uses WhisperKit (Apple GPU) on Apple Silicon, else faster-whisper."
 say "WhisperKit needs Homebrew's whisperkit-cli; without it the app falls back to faster-whisper on the CPU."
@@ -258,17 +240,17 @@ note "STT_ENGINE: auto | whisperkit | faster-whisper"
 ask STT_ENGINE "STT_ENGINE:"; write_env STT_ENGINE "${STT_ENGINE:-auto}"
 pause
 
-# ── 4 ─────────────────────────────────────────────────────────────────────
+# ── 3 ─────────────────────────────────────────────────────────────────────
 stage "Unit tests"
 say "No audio or GPU needed. All tests should pass."
 if uv run pytest -q; then say "Tests passed."
 else warn "Some tests failed (output above)."; confirm "Continue anyway?" || exit 1; fi
 pause
 
-# ── 5 ─────────────────────────────────────────────────────────────────────
+# ── 4 ─────────────────────────────────────────────────────────────────────
 stage "Configure .env"
 if [[ ! -f "$ENV_FILE" ]]; then cp .env.example "$ENV_FILE"; chmod 600 "$ENV_FILE"; say "Created .env from .env.example."; fi
-note "Providers: gemini | claude | openai | grok | custom | ollama (local only, no key)"
+note "Providers: gemini | claude | openai | grok | custom"
 ask LLM_PROVIDER "LLM_PROVIDER:"
 case "$LLM_PROVIDER" in
   gemini) open_url "https://aistudio.google.com/apikey"
@@ -286,8 +268,7 @@ case "$LLM_PROVIDER" in
   custom) ask CUSTOM_BASE_URL "CUSTOM_BASE_URL (e.g. http://localhost:20128/v1):"; write_env CUSTOM_BASE_URL "$CUSTOM_BASE_URL"
           ask CUSTOM_MODEL "CUSTOM_MODEL:"; write_env CUSTOM_MODEL "$CUSTOM_MODEL"
           ask_secret CUSTOM_API_KEY "CUSTOM_API_KEY (Enter for none):"; write_env CUSTOM_API_KEY "$CUSTOM_API_KEY" ;;
-  ollama) say "Local only: no key needed." ;;
-  *)      warn "Unknown provider '$LLM_PROVIDER'; using ollama."; LLM_PROVIDER=ollama ;;
+  *)      warn "Unknown provider '$LLM_PROVIDER'; using gemini (no key yet)."; LLM_PROVIDER=gemini ;;
 esac
 write_env LLM_PROVIDER "$LLM_PROVIDER"
 note "PROMPT: system (client/sales calls) | interview (job interviews, meetings at work)"
@@ -296,7 +277,7 @@ note "LANGUAGES: spoken languages, yours first, e.g. en,ar or de,en"
 ask LANGUAGES "LANGUAGES:"; write_env LANGUAGES "$LANGUAGES"
 pause
 
-# ── 6 ─────────────────────────────────────────────────────────────────────
+# ── 5 ─────────────────────────────────────────────────────────────────────
 stage "BlackHole: capture the meeting audio"
 say "macOS has no system-audio loopback; BlackHole 2ch is a virtual device the app records from."
 # Installed = the driver is on disk; loaded = Core Audio lists it (only after coreaudiod restarts).
@@ -337,7 +318,7 @@ step "System Settings → Sound → Output: select Multi-Output Device."
 note "Volume keys don't work on a Multi-Output Device; set the volume on the headphones in Audio MIDI Setup."
 pause "Press Enter once the output is switched"
 
-# ── 7 ─────────────────────────────────────────────────────────────────────
+# ── 6 ─────────────────────────────────────────────────────────────────────
 stage "Microphone access and live levels"
 open_url "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 step "Privacy & Security → Microphone: allow your terminal app (it may ask on first use)."
@@ -351,7 +332,7 @@ ask MIC_DEVICE "MIC_DEVICE (empty = system default):"; write_env MIC_DEVICE "$MI
 ask LOOPBACK_DEVICE "LOOPBACK_DEVICE (empty = BlackHole):"; write_env LOOPBACK_DEVICE "$LOOPBACK_DEVICE"
 confirm "Did both bars react?" || SKIPPED+=("audio levels: check devices with uv run python -m copilot.devices")
 
-# ── 8 ─────────────────────────────────────────────────────────────────────
+# ── 7 ─────────────────────────────────────────────────────────────────────
 stage "Live run"
 mkdir -p sessions
 say "Starting the app (output: $LOG). The first run downloads the Whisper model."
@@ -380,7 +361,7 @@ say "App stopped. STT engine used in this run:"
 tail -n +"$LOG_START" "$LOG" | grep "STT:" | sed 's/^/    /' || warn "no STT lines in $LOG (did the meeting start?)"
 pause
 
-# ── 9 ─────────────────────────────────────────────────────────────────────
+# ── 8 ─────────────────────────────────────────────────────────────────────
 stage "Meeting record"
 MEETINGS=$(_existing MEETINGS_DIR || true); MEETINGS=${MEETINGS:-meetings}
 LATEST=$(ls -t "$MEETINGS"/Meeting*.md 2>/dev/null | head -n1 || true)

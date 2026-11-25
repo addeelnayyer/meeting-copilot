@@ -6,12 +6,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from copilot import config
+from copilot import config, strings
 from copilot.facts import Facts
 import httpx
 
 from copilot.llm import LLM, SUGGESTION_SCHEMA, parse_json
 from copilot.providers import GeminiProvider, Provider
+from copilot.strings import UiError
 from copilot.rag import split_text
 from copilot.hotkeys import to_pynput, to_win32
 from copilot import stt
@@ -120,135 +121,83 @@ class FakeProvider(Provider):
     def __init__(self, id, delay=0.0, error=None, configured=True):
         self.id, self.label, self.model = id, id.title(), f"{id}-model"
         self.delay, self.error, self._configured = delay, error, configured
-        self.calls = []  # "warmup" and "complete", in the order they reached the provider
-        self.warmup_error = None  # raised by warmup()
+        self.calls = 0  # requests that reached this provider
 
     @property
     def configured(self):
         return self._configured
 
-    async def warmup(self):
-        self.calls.append("warmup")
-        if self.warmup_error:
-            raise self.warmup_error
-
     async def complete(self, system, prompt, schema=None):
-        self.calls.append("complete")
+        self.calls += 1
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
         return '{"trigger": "%s", "suggestions": [], "new_facts": []}' % self.id
 
 
-def _llm(monkeypatch, cloud_delay, ollama_delay, cloud_error=None, cloud=None):
-    monkeypatch.setattr(config, "CLOUD_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
-    cloud = cloud or GeminiProvider()  # real retry_after parsing for Gemini quota errors
-    fake = FakeProvider("claude", cloud_delay, cloud_error)
-    fake.retry_after = cloud.retry_after
-    return LLM([fake, FakeProvider("grok", configured=False), FakeProvider("ollama", ollama_delay)])
+def _llm(monkeypatch, error=None, primary="claude"):
+    """claude (selected, failing with `error`), grok (no key) and openai, all fakes."""
+    monkeypatch.setattr(config, "LLM_PROVIDER", primary)
+    fake = FakeProvider("claude", error=error)
+    fake.retry_after = GeminiProvider().retry_after  # real parsing of Gemini quota errors
+    return LLM([fake, FakeProvider("grok", configured=False), FakeProvider("openai")])
 
 
-def test_slow_cloud_still_wins_race_against_slower_ollama(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.15, ollama_delay=0.5)
+def test_the_selected_provider_answers(monkeypatch):
+    client = _llm(monkeypatch)
     res, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "claude" and res["trigger"] == "claude"
-    assert client.primary_available
+    assert engine == "claude" and res["trigger"] == "claude" and client.note == ""
 
 
-def test_ollama_wins_when_cloud_is_much_slower(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.05)
-    res, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "ollama" and res["trigger"] == "ollama"
-    assert client.primary_available  # slowness alone does not trip the breaker
-
-
-def test_cloud_errors_fall_back_and_open_breaker(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+def test_a_failing_provider_reaches_no_other_and_the_next_request_tries_again(monkeypatch):
+    client = _llm(monkeypatch, error=RuntimeError("503 overloaded"))
 
     async def run():
-        await client.generate_json("s", "p")
-        return await client.generate_json("s", "p")
-
-    res, engine, _ = asyncio.run(run())
-    assert engine == "ollama" and res["trigger"] == "ollama"
-    assert not client.primary_available
-
-
-def test_gemini_quota_429_skips_primary_for_retry_delay(monkeypatch):
-    err = RuntimeError("429 RESOURCE_EXHAUSTED {'retryDelay': '62535s'}")
-    err.code = 429
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=err)
-    _, engine, _ = asyncio.run(client.generate_json("s", "p"))
-    assert engine == "ollama" and not client.primary_available
-    assert "1042 min" in client.note
-
-
-def test_cloud_primary_does_not_warm_the_local_llm(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    asyncio.run(client.warmup())
-    assert client.fallback.calls == []
-
-
-def test_local_primary_is_warmed_at_startup(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    client.set_primary("ollama")
-    asyncio.run(client.warmup())
-    assert client.fallback.calls == ["warmup"]
-
-
-def test_cloud_failure_warms_the_fallback_once_before_it_answers(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
-
-    async def run():
-        first = await client.generate_json("s", "p")  # the cloud fails, the fallback answers
-        await client.generate_json("s", "p")
-        await client.generate_json("s", "p")  # breaker open: straight to the fallback
-        return first
-
-    _, engine, _ = asyncio.run(run())
-    assert engine == "ollama"
-    assert client.fallback.calls == ["warmup", "complete", "complete", "complete"]
-
-
-def test_hedge_warms_the_fallback_once_for_concurrent_requests(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=1.0, ollama_delay=0.0)
-
-    async def run():
-        return await asyncio.gather(client.generate_json("s", "p"), client.generate_json("s", "p"))
-
-    assert [engine for _, engine, _ in asyncio.run(run())] == ["ollama", "ollama"]
-    assert client.fallback.calls == ["warmup", "complete", "complete"]
-
-
-def test_a_failed_warm_up_is_not_kept_and_the_fallback_still_answers(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
-    client.fallback.warmup_error = ValueError("unexpected reply")  # not an httpx.HTTPError
-
-    async def run():
-        engines = [(await client.generate_json("s", "p"))[1] for _ in range(2)]
-        client.fallback.warmup_error = None
-        engines += [(await client.generate_json("s", "p"))[1] for _ in range(2)]
-        return engines
-
-    assert asyncio.run(run()) == ["ollama"] * 4
-    # Tried again on every request until one warm-up succeeds, then kept.
-    assert client.fallback.calls == ["warmup", "complete", "warmup", "complete", "warmup", "complete", "complete"]
-
-
-def test_a_failed_warm_up_of_the_local_primary_is_retried(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-    client.set_primary("ollama")
-    client.fallback.warmup_error = ValueError("unexpected reply")
-
-    async def run():
-        await client.warmup()  # reported, not raised
-        client.fallback.warmup_error = None
-        await client.warmup()
-        await client.warmup()
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="503"):
+                await client.generate_json("s", "p")
 
     asyncio.run(run())
-    assert client.fallback.calls == ["warmup", "warmup"]
+    claude, _, openai = client.providers.values()
+    assert claude.calls == 2 and openai.calls == 0
+    assert "Claude" in client.note and "503" in client.note
+    claude.error = None
+    asyncio.run(client.generate_json("s", "p"))
+    assert client.note == ""
+
+
+def test_a_429_pauses_the_provider_for_its_retry_delay(monkeypatch):
+    err = RuntimeError("429 RESOURCE_EXHAUSTED {'retryDelay': '62535s'}")
+    err.code = 429
+    client = _llm(monkeypatch, error=err)
+
+    async def run():
+        with pytest.raises(RuntimeError, match="429"):
+            await client.generate_json("s", "p")
+        with pytest.raises(UiError) as paused:  # in the pause: fails at once
+            await client.generate_json("s", "p")
+        return paused.value
+
+    paused = asyncio.run(run())
+    assert client.providers["claude"].calls == 1
+    assert "1042 min" in client.note and "1042 min" in str(paused)
+
+
+def test_without_a_configured_provider_requests_fail_with_a_note(monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+    client = LLM([FakeProvider("claude", configured=False), FakeProvider("grok", configured=False)])
+    assert client.note == strings.t("llm.none")  # shown in the window from the start
+    with pytest.raises(UiError) as e:
+        asyncio.run(client.generate("s", "p"))
+    assert str(e.value) == client.note == strings.t("llm.none")
+    assert client.describe()["active"] == ""
+
+
+def test_describe_lists_only_cloud_providers():
+    listed = LLM().describe()
+    assert [p["id"] for p in listed["list"]] == ["gemini", "claude", "openai", "grok", "custom"]
+    assert set(listed) == {"type", "active", "list"}
 
 
 def test_http_429_uses_retry_after_header():
@@ -262,14 +211,16 @@ def test_http_429_uses_retry_after_header():
 
 
 def test_switching_provider(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client = _llm(monkeypatch)
     assert client.primary.id == "claude"
-    client.set_primary("grok")  # no key -> stays usable via Ollama, with a note
-    assert client.primary.id == "ollama" and not client.primary_available and "grok" in client.note
-    client.set_primary("claude")
-    assert client.primary.id == "claude" and client.note == ""
+    client.set_primary("grok")  # no key: stays on claude, with a note
+    assert client.primary.id == "claude" and "grok" in client.note
+    client.set_primary("mistral")  # unknown
+    assert client.primary.id == "claude" and "mistral" in client.note
+    client.set_primary("openai")
+    assert client.primary.id == "openai" and client.note == ""
     listed = client.describe()
-    assert listed["active"] == "claude"
+    assert listed["active"] == "openai"
     assert [p["configured"] for p in listed["list"]] == [True, False, True]
 
 
@@ -301,105 +252,37 @@ def test_openai_compatible_downgrades_json_mode():
     assert calls == ["json_schema", "json_object", None] and p._json_mode == "prompt"
 
 
-def _ollama_recording(reply):
-    """An OllamaProvider whose HTTP client records each request body and answers with `reply`."""
-    from copilot.providers import OllamaProvider
-
-    p, sent = OllamaProvider(), []
-
-    def handle(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"message": {"role": "assistant", "content": reply}})
-
-    p._http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-    return p, sent
-
-
-@pytest.mark.parametrize("schema, reply", [
-    (SUGGESTION_SCHEMA, '{"trigger": "ok", "suggestions": [], "new_facts": []}'),
-    (None, "Hallo Welt"),
-])
-def test_ollama_chat_turns_thinking_off(schema, reply):
-    p, sent = _ollama_recording(reply)
-    assert asyncio.run(p.complete("s", "p", schema)) == reply
-    assert sent[0]["think"] is False and sent[0].get("format") == schema
-
-
-def test_ollama_warmup_turns_thinking_off():
-    p, sent = _ollama_recording("")
-    asyncio.run(p.warmup())
-    assert sent[0]["think"] is False and sent[0]["messages"] == []
-
-
 def test_schema_is_closed_for_strict_providers():
     assert SUGGESTION_SCHEMA["additionalProperties"] is False
     assert SUGGESTION_SCHEMA["properties"]["suggestions"]["items"]["additionalProperties"] is False
 
 
 # --- memory --------------------------------------------------------------------------
-def _memory_assistant(tmp_path, reply=None):
-    """A fake assistant whose LLM records every memory call as (system, prompt)."""
-    from copilot.memory import Memory
+def _summarize_once(tmp_path, monkeypatch, reply):
+    """A meeting stopped after enough words for one fold; returns the fold's system prompt."""
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = RecordingLLM(reply=lambda prompt: reply)
 
-    class FakeLLM:
-        calls = []
+    async def run():
+        a.start_meeting()
+        a.on_segment(seg("Participant", "We need the website by the end of March " * 6, time.monotonic()))
+        await a.stop_meeting()
 
-        async def generate(self, system, prompt):
-            self.calls.append((system, prompt))
-            return reply or f"- Zusammenfassung {len(self.calls)}", "gemini", 0.5
-
-    class FakeAssistant:
-        transcript = Transcript()
-        memory = Memory(tmp_path / "s.memory.md")
-        llm = FakeLLM()
-        events = []
-        emit = events.append
-
-    return FakeAssistant()
-
-
-def _summarize_once(tmp_path, reply):
-    from copilot import memory
-
-    a = _memory_assistant(tmp_path, reply)
-    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
-    asyncio.run(memory.summarize(a))
-    return a.llm.calls[0][0], a
-
-
-def test_memory_summarizes_only_new_segments(tmp_path):
-    from copilot import memory
-
-    a = _memory_assistant(tmp_path)
-    prompts = lambda: [prompt for _, prompt in a.llm.calls]
-    a.transcript.add(seg("Participant", "Kurz.", 1.0))
-    asyncio.run(memory.summarize(a))
-    assert prompts() == []  # below MEMORY_MIN_WORDS
-
-    a.transcript.add(seg("Participant", "Wir brauchen die Website bis Ende März " * 6, 5.0))
-    asyncio.run(memory.summarize(a))
-    assert "Ende März" in prompts()[0] and a.memory.text == "- Zusammenfassung 1"
-    assert (tmp_path / "s.memory.md").read_text(encoding="utf-8") == "- Zusammenfassung 1"
-
-    a.transcript.add(seg("User", "Das bekommen wir hin, versprochen " * 8, 30.0))
-    asyncio.run(memory.summarize(a))
-    assert "Ende März" not in prompts()[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
-    assert "- Zusammenfassung 1" in prompts()[1]  # previous memory is carried forward
-    assert a.events[-1]["type"] == "memory"
+    asyncio.run(run())
+    [(system, _)] = a.llm.calls
+    return system, a, events
 
 
 def test_memory_follows_reply_language(tmp_path, monkeypatch):
-    from copilot import export
-
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
     reply = "## Discussion\n- Website by the end of March"
-    system, a = _summarize_once(tmp_path, reply)
+    system, a, events = _summarize_once(tmp_path, monkeypatch, reply)
     assert "'en'" in system and "German" not in system
     assert "## Discussion" in system and "## Decisions & commitments" in system and "## Verlauf" not in system
     # the panel and the meeting record show the memory as written
-    assert a.events[-1] == {"type": "memory", "text": reply, "engine": "gemini", "ms": 500}
-    record = export.render(a.transcript.segments, a.memory, Facts(tmp_path / "facts.json"), [], 0.0, 60.0)
-    assert reply in record
+    [memory] = [e for e in events if e["type"] == "memory" and e["text"]]
+    assert memory["text"] == reply
+    assert reply in _record(tmp_path)
 
 
 def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
@@ -414,7 +297,7 @@ def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
 
 def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
-    system, _ = _summarize_once(tmp_path, "- Zusammenfassung")
+    system, _, _ = _summarize_once(tmp_path, monkeypatch, "- Zusammenfassung")
     assert "in German" in system
     for heading in ("## Verlauf", "## Entscheidungen & Zusagen", "## Offene Punkte & Einwände",
                     "## Stimmung & Prioritäten der Teilnehmer"):
@@ -561,27 +444,6 @@ def test_hotkeys_convert_to_win32_modifiers_and_keys():
     assert to_win32("ctrl+alt+1") == (0x3, ord("1"))
 
 
-# --- ollama models -------------------------------------------------------------------
-def test_ollama_model_switch_and_status_note(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
-    ollama = client.fallback
-    installed = None
-
-    async def fake_installed():
-        return installed
-
-    ollama.installed = fake_installed
-    assert asyncio.run(client.check_ollama()) and "isn't running" in client.ollama_note
-
-    installed = ["llama3.2:3b", "qwen3:4b"]
-    assert asyncio.run(client.check_ollama()) and "ollama-model is missing" in client.ollama_note
-    assert not asyncio.run(client.check_ollama())  # unchanged: no UI update
-
-    client.set_primary("ollama:qwen3:4b")
-    assert client.primary is ollama and ollama.model == "qwen3:4b" and client.ollama_note == ""
-    assert client.describe()["ollama_models"] == installed
-
-
 # --- knowledge base sync -------------------------------------------------------------
 def test_kb_sync_reindexes_only_on_change_and_drops_stale_index(tmp_path, monkeypatch):
     import lancedb
@@ -628,37 +490,11 @@ def _meeting_assistant(tmp_path, monkeypatch, open_capture, open_stt=None, close
     return a, events
 
 
-@pytest.mark.parametrize("choice, warmups", [
-    ("claude", []),  # a cloud primary leaves the local LLM unloaded
-    ("ollama", ["warmup"]),
-    ("ollama:qwen3:4b", ["warmup"]),
-])
-def test_switching_the_primary_to_the_local_llm_warms_it(choice, warmups, tmp_path, monkeypatch):
+def test_switching_the_provider_publishes_the_list(tmp_path, monkeypatch):
     a, events = _meeting_assistant(tmp_path, monkeypatch, None)
-    a.llm = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-
-    async def run():
-        a.set_provider(choice)
-        await asyncio.sleep(0.01)
-
-    asyncio.run(run())
-    assert a.llm.fallback.calls == warmups
-    assert events[-1]["type"] == "providers"
-
-
-def test_a_new_local_model_is_warmed_again(monkeypatch):
-    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
-
-    async def run():
-        client.set_primary("ollama:qwen3:4b")
-        await client.warmup()
-        client.set_primary("ollama:qwen3:4b")  # same model: already loaded
-        await client.warmup()
-        client.set_primary("ollama:llama3.2:3b")
-        await client.warmup()
-
-    asyncio.run(run())
-    assert client.fallback.calls == ["warmup", "warmup"]
+    a.llm = _llm(monkeypatch)
+    a.set_provider("openai")
+    assert a.llm.primary.id == "openai" and events[-1]["type"] == "providers"
 
 
 def test_meeting_opens_devices_only_while_running_and_mute_keeps_participants(tmp_path, monkeypatch):
@@ -774,6 +610,12 @@ def _recording(a, events, tmp_path, monkeypatch):
     return a, events
 
 
+def _record(tmp_path):
+    """The text of the one meeting record."""
+    [record] = (tmp_path / "meetings").iterdir()
+    return record.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("lang, lines", [
     ("en", ["## Summary", "(none, the conversation was too short)", "## Facts", "(none yet)",
             "## Suggestions and answers", "Question: What now?", "## Transcript",
@@ -797,10 +639,10 @@ def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_pa
         await a.stop_meeting()
 
     asyncio.run(run())
-    [record] = (tmp_path / "meetings").iterdir()
-    text = record.read_text(encoding="utf-8")
+    text = _record(tmp_path)
     for line in lines + ["Preisfrage", "Das hängt vom Umfang ab."]:  # LLM-written text stays as written
         assert line in text
+    [record] = (tmp_path / "meetings").iterdir()
     assert events[-1] == {"type": "saved", "path": str(record)}
 
 
@@ -817,15 +659,21 @@ def test_empty_meeting_writes_no_record(tmp_path, monkeypatch):
 
 # --- languages -----------------------------------------------------------------------
 class RecordingLLM:
+    """Answers plain calls (generate) with reply(prompt) after `delay`, or raises `error`;
+    records every call as (system, prompt)."""
+
     def __init__(self, reply=lambda prompt: "Roman " + prompt, delay=0.0, error=None):
         self.calls, self.reply, self.delay, self.error = [], reply, delay, error
 
-    async def generate(self, system, prompt):
+    def _called(self, kind, system, prompt):
         self.calls.append((system, prompt))
+
+    async def generate(self, system, prompt):
+        self._called("fold", system, prompt)  # PromptLLM's plain calls are its folds
         await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
-        return self.reply(prompt), "ollama", self.delay
+        return self.reply(prompt), "claude", self.delay
 
 
 def test_translation_goes_into_your_language_and_from_it_into_the_second(tmp_path, monkeypatch):
@@ -871,7 +719,7 @@ def _proactive_assistant(tmp_path, monkeypatch, triggers):
     class FakeLLM:
         async def generate_json(self, system, prompt):
             t = next(answers)
-            return {"trigger": t, "suggestions": [{"text": f"{t} 1"}, {"text": f"{t} 2"}], "new_facts": []}, "ollama", 0.1
+            return {"trigger": t, "suggestions": [{"text": f"{t} 1"}, {"text": f"{t} 2"}], "new_facts": []}, "claude", 0.1
 
     a.llm = FakeLLM()
     a.kb = SimpleNamespace(context=lambda q: "")
@@ -913,22 +761,6 @@ def test_proactive_waits_for_the_end_of_the_turn(tmp_path, monkeypatch):
 
 
 # --- UI language ---------------------------------------------------------------------
-@pytest.mark.parametrize("lang, note", [
-    ("en", "Ollama model ollama-model is missing: ollama pull ollama-model, or pick an installed one above"),
-    ("de", "Ollama-Modell ollama-model fehlt: ollama pull ollama-model, oder oben ein installiertes wählen"),
-])
-def test_missing_ollama_model_note_follows_ui_language(monkeypatch, lang, note):
-    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    client = _llm(monkeypatch, cloud_delay=0, ollama_delay=0)
-
-    async def fake_installed():
-        return ["llama3.2:3b"]
-
-    client.fallback.installed = fake_installed
-    asyncio.run(client.check_ollama())
-    assert client.ollama_note == note
-
-
 @pytest.mark.parametrize("lang, error", [
     ("en", "'parec' not found. Install it (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
     ("de", "'parec' nicht gefunden. Bitte installieren (Debian/Ubuntu/Fedora: pulseaudio-utils, Arch: libpulse)."),
@@ -949,7 +781,7 @@ def test_audio_device_error_follows_ui_language_and_console_stays_english(tmp_pa
 def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkeypatch):
     class FakeLLM:
         async def generate_json(self, system, prompt):
-            return None, "ollama", 0.1
+            return None, "claude", 0.1
 
     class NoKnowledge:
         def context(self, query):
@@ -962,19 +794,10 @@ def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkey
     assert events[-1] == {"type": "error", "text": "The answer wasn't valid JSON."}
 
 
-@pytest.mark.parametrize("lang, label", [("en", "Ollama (local)"), ("de", "Ollama (lokal)")])
-def test_ollama_label_follows_ui_language(monkeypatch, lang, label):
-    from copilot.providers import OllamaProvider
-
-    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    client = LLM([FakeProvider("claude"), OllamaProvider()])
-    assert {p["id"]: p["label"] for p in client.describe()["list"]}["ollama"] == label
-
-
 # --- presets per UI language ---------------------------------------------------------
 @pytest.mark.parametrize("lang, labels, first_query", [
-    ("en", ["What should I answer?", "Weak points", "Summary"], "What should I answer now?"),
-    ("de", ["Was antworten?", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
+    ("en", ["What should I answer?", "Questions", "Weak points", "Summary"], "What should I answer now?"),
+    ("de", ["Was antworten?", "Fragen", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
 ])
 def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_query, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "UI_LANGUAGE", lang)
@@ -982,38 +805,367 @@ def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_
     presets = a.presets()
     assert [p["label"] for p in presets] == labels
     assert presets[0]["query"] == first_query
-    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3"]
+    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3", "ctrl+alt+4"]
 
 
-@pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),
-                                            ("de", "Was soll ich jetzt antworten?")])
-def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp_path, monkeypatch):
+def _press(a, events, monkeypatch, hotkey):
+    """Press a global hotkey and wait for what it started."""
     from copilot import hotkeys
 
-    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
-    a, events = _meeting_assistant(tmp_path, monkeypatch, None)
-    prompts = []
-
-    class FakeLLM:
-        async def generate_json(self, system, prompt):
-            prompts.append(prompt)
-            return {"trigger": "Answer", "suggestions": [{"text": "Yes."}], "new_facts": []}, "ollama", 0.1
-
-    a.llm = FakeLLM()
-    a.kb = SimpleNamespace(context=lambda q: "")
     bound = {}
     monkeypatch.setattr(hotkeys, "_bind", bound.update)
 
     async def press():
         hotkeys.register(asyncio.get_running_loop(), a, events.append, SimpleNamespace(supported=False))
-        bound["ctrl+alt+1"]()  # on the hotkey thread in the app
-        for _ in range(20):
-            await asyncio.sleep(0.01)
+        bound[hotkey]()  # on the hotkey thread in the app
+        await asyncio.sleep(0.05)
+        await _drain()
 
-    asyncio.run(press())
-    assert prompts[0].endswith(f"[USER QUESTION]\n{question}")
+    return press()
+
+
+@pytest.mark.parametrize("lang, question", [("en", "Which questions should I ask now, given what was said?"),
+                                            ("de", "Welche Fragen sollte ich nach dem Gesagten jetzt stellen?")])
+def test_the_questions_preset_asks_with_the_suggestion_prompt(lang, question, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say("Was kostet die Website?")
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+2"))
+    [prompt] = a.llm.prompts("ask")
+    assert prompt.endswith(f"[USER QUESTION]\n{question}")
+    [card] = [e for e in events if e["type"] == "answer"]
+    assert card["query"] == question and card["suggestions"] == [{"text": "Say yes."}]
+
+
+def test_the_summary_preset_folds_once_and_its_card_is_the_meeting_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say(_words("budget", 25), _words("deadline", 25))
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    assert [kind for kind, *_ in a.llm.calls] == ["fold"]
+    [card] = [e for e in events if e["type"] == "answer"]
+    assert card["summary"] and [s["text"] for s in card["suggestions"]] == ["- Memory 1"]
+    assert [e["text"] for e in events if e["type"] == "memory"][-1] == "- Memory 1"
+
+
+def test_the_summary_preset_with_nothing_new_shows_the_memory_without_a_call(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say(_words("budget", 50))
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    say("Okay.")
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    assert len(a.llm.calls) == 1
+    cards = [e for e in events if e["type"] == "answer"]
+    assert [c["suggestions"][0]["text"] for c in cards] == ["- Memory 1", "- Memory 1"]
+
+
+@pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),
+                                            ("de", "Was soll ich jetzt antworten?")])
+def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    a, events, _ = _on_demand(tmp_path, monkeypatch)
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+1"))
+    [prompt] = a.llm.prompts("ask")
+    assert prompt.endswith(f"[USER QUESTION]\n{question}")
     [card] = [e for e in events if e["type"] == "answer"]
     assert card["query"] == question
+
+
+# --- on demand: checkpoint and fold --------------------------------------------------
+class PromptLLM(RecordingLLM):
+    """Also answers suggestions (generate_json), and its plain calls write the meeting memory;
+    records every call as (kind, system, prompt, time). `fold_errors` fail that many memory calls
+    first."""
+
+    def __init__(self, fold_errors=0, delay=0.0, fold_delay=0.0):
+        super().__init__(reply=self._memory, delay=fold_delay)
+        self.ask_delay, self.fold_errors, self.folds = delay, fold_errors, 0
+        self.folding, self.most_folding = 0, 0  # folds in flight at once
+
+    def _called(self, kind, system, prompt):
+        self.calls.append((kind, system, prompt, time.time()))
+
+    def _memory(self, prompt):
+        if self.fold_errors:
+            self.fold_errors -= 1
+            raise RuntimeError("overloaded")
+        self.folds += 1
+        return f"- Memory {self.folds}"
+
+    async def generate_json(self, system, prompt):
+        self._called("ask", system, prompt)
+        await asyncio.sleep(self.ask_delay)
+        return {"trigger": "Answer", "suggestions": [{"text": "Say yes."}], "new_facts": []}, "claude", 0.1
+
+    async def generate(self, system, prompt):
+        self.folding += 1
+        self.most_folding = max(self.most_folding, self.folding)
+        try:
+            text, engine, _ = await super().generate(system, prompt)
+        finally:
+            self.folding -= 1
+        return text, engine, 0.2
+
+    def prompts(self, kind):
+        return [prompt for k, _, prompt, _ in self.calls if k == kind]
+
+
+def _on_demand(tmp_path, monkeypatch, llm=None):
+    """A recording assistant with a meeting started; `say(*texts)` adds alternating turns."""
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = PromptLLM() if llm is None else llm
+    a.kb = SimpleNamespace(context=lambda q: "")
+    a.start_meeting()
+    clock = [time.monotonic()]
+
+    def say(*texts):
+        spoken = []
+        for text in texts:
+            clock[0] += 5.0  # a new turn each time: the speakers alternate after a long gap
+            source = "Participant" if len(a.transcript.segments) % 2 == 0 else "User"
+            spoken.append(seg(source, text, clock[0]))
+            a.on_segment(spoken[-1])
+        return spoken
+
+    return a, events, say
+
+
+def _words(name, n=20):
+    return " ".join(f"{name}{i}" for i in range(n))
+
+
+def _transcript_part(prompt):
+    return prompt.split("[TRANSCRIPT]")[1]
+
+
+def test_a_request_sends_the_memory_and_only_the_segments_after_the_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ASK_MIN_TURNS", 2)
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("old", 20), _words("older", 20), _words("oldest", 20))
+        await a.ask("What now?")
+        await _drain()  # the fold after the answer
+        say(_words("alpha", 15), _words("beta", 15), _words("gamma", 15))
+        await a.ask("And now?")
+        await _drain()
+        say("delta four")
+        await a.ask("Next?")
+        await _drain()
+
+    asyncio.run(run())
+    first, second, third = a.llm.prompts("ask")
+    assert "old0" in _transcript_part(first)
+    assert "- Memory 1" in second.split("[KNOWLEDGE]")[0]
+    assert [w in _transcript_part(second) for w in ("alpha", "beta", "gamma", "old0", "older0", "oldest0")] == [
+        True, True, True, False, False, False]
+    # one new segment: reaches back to the last two turns, no further
+    assert [w in _transcript_part(third) for w in ("delta", "gamma", "beta", "oldest0")] == [True, True, False, False]
+
+
+def test_after_the_answer_the_new_segments_are_folded_and_the_memory_event_carries_the_checkpoint_time(
+        tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        spoken = say(_words("price", 25), _words("date", 25))
+        await a.ask("What now?")
+        await _drain()
+        return spoken
+
+    spoken = asyncio.run(run())
+    [fold] = a.llm.prompts("fold")
+    assert "price0" in fold and "date0" in fold
+    shown = [e["type"] for e in events if e["type"] in ("answer", "memory")]
+    assert shown[-2:] == ["answer", "memory"]  # the answer first, then the meeting memory
+    assert events[-1] == {"type": "memory", "text": "- Memory 1", "until": spoken[-1].ts,
+                          "engine": "claude", "ms": 200}
+
+
+def test_a_failed_fold_leaves_the_checkpoint_and_the_next_request_sends_the_larger_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ASK_MIN_TURNS", 1)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_errors=1))
+
+    async def run():
+        say(_words("first", 45))
+        await a.ask("What now?")
+        await _drain()
+        say(_words("second", 45))
+        await a.ask("And now?")
+        await _drain()
+
+    asyncio.run(run())
+    assert {"type": "error", "source": "memory", "text": "Memory: overloaded"} in events
+    second = a.llm.prompts("ask")[1]
+    assert "first0" in _transcript_part(second) and "second0" in _transcript_part(second)
+    failed, folded = a.llm.prompts("fold")
+    assert "first0" in folded and "second0" in folded  # the memory catches up
+    assert [e["text"] for e in events if e["type"] == "memory"][-1] == "- Memory 1"
+
+
+def test_a_failed_summary_ends_its_request_with_a_plain_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_errors=1))
+    say(_words("budget", 50))
+    asyncio.run(a.run_preset("summary"))
+    assert events[-1] == {"type": "error", "text": "Memory: overloaded"}
+
+
+def test_a_fold_is_skipped_when_few_words_are_new(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("few", config.MEMORY_MIN_WORDS - 1))
+        await a.ask("What now?")
+        await _drain()
+
+    asyncio.run(run())
+    assert a.llm.prompts("fold") == [] and len(a.llm.prompts("ask")) == 1
+
+
+def test_at_most_one_fold_runs_at_a_time(tmp_path, monkeypatch):
+    a, _, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_delay=0.1))
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")
+        await asyncio.sleep(0.01)  # its fold runs in the background
+        say(_words("deadline", 50))
+        await asyncio.gather(a.run_preset("summary"), a.run_preset("summary"), a.ask("And now?"))
+        await _drain()
+
+    asyncio.run(run())
+    assert a.llm.most_folding == 1 and len(a.llm.prompts("fold")) == 2
+
+
+def test_a_meeting_starts_with_proactive_off(tmp_path, monkeypatch):
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = PromptLLM()
+    a.set_mode(proactive=True)  # left on in the meeting before
+    a.start_meeting()
+    assert {"type": "mode", "proactive": False, "translate": False} in events[events.index({"type": "reset"}):]
+
+    async def run():
+        a.on_segment(seg("Participant", "Das ist uns zu teuer.", time.monotonic()))
+        await asyncio.sleep(config.PROACTIVE_DEBOUNCE_S + 0.1)
+        await _drain()
+
+    monkeypatch.setattr(config, "PROACTIVE_DEBOUNCE_S", 0.01)
+    asyncio.run(run())
+    assert a.llm.calls == []
+
+
+def test_a_proactive_card_sends_the_last_15_turns_and_leaves_the_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROACTIVE_DEBOUNCE_S", 0.01)
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(*(_words(f"turn{i}x", 5) for i in range(18)))  # the last one is the user's
+        a.set_mode(proactive=True)
+        say(_words("turn18x", 5))  # a participant's: the proactive call follows
+        await asyncio.sleep(0.1)
+        await _drain()
+        await a.ask("What now?")
+        await _drain()
+
+    asyncio.run(run())
+    proactive, asked = a.llm.prompts("ask")
+    assert [f"turn{i}x0" in _transcript_part(proactive) for i in (3, 4, 18)] == [False, True, True]
+    assert any(e["type"] == "suggestion" for e in events)
+    assert a.llm.prompts("fold")[0].count("turn") == 19 * 5  # the proactive card folded nothing
+    assert "turn0x0" in _transcript_part(asked)
+
+
+def test_cards_carry_the_time_they_were_asked(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(delay=0.1))
+    say("Was kostet die Website?")
+    before = time.time()
+    asyncio.run(a.ask("What now?"))
+    [card] = [e for e in events if e["type"] == "answer"]
+    [(_, _, _, called)] = a.llm.calls
+    assert before <= card["ts"] <= called  # when asked, not when the answer came
+
+
+def test_stopping_a_meeting_folds_the_rest_once_into_the_record(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")
+        await _drain()
+        say(_words("deadline", 50))
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    first, last = a.llm.prompts("fold")
+    assert "deadline0" in last.split("[NEW TRANSCRIPT]")[1] and "budget0" not in last.split("[NEW TRANSCRIPT]")[1]
+    assert "- Memory 1" in last  # the meeting memory so far is carried forward
+    assert "- Memory 2" in _record(tmp_path)
+
+
+def test_stopping_a_meeting_folds_even_a_few_new_words(tmp_path, monkeypatch):
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+    say("Okay, bis morgen.")
+
+    async def stop():
+        await a.stop_meeting()
+
+    asyncio.run(stop())
+    [fold] = a.llm.prompts("fold")
+    assert "bis morgen" in fold and "- Memory 1" in _record(tmp_path)
+
+
+def test_the_summary_card_is_not_repeated_in_the_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.run_preset("summary")
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    text = _record(tmp_path)
+    assert text.count("Memory 1") == 1  # in the meeting memory section only
+    assert "## Suggestions and answers\n(none)" in text
+
+
+def test_nothing_writes_the_meeting_memory_after_its_record(tmp_path, monkeypatch):
+    from copilot import assistant
+
+    monkeypatch.setattr(assistant, "STOP_LIMIT_S", 0.1)
+    a, _, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_delay=0.5))
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")  # its fold is still running at the stop
+        await a.stop_meeting()
+        written = _record(tmp_path)
+        await asyncio.sleep(0.6)  # the fold would have finished by now
+        await _drain()
+        return written
+
+    written = asyncio.run(run())
+    assert _record(tmp_path) == written
+    assert a.memory.text == "" and not a.memory.path.exists()
+
+
+@pytest.mark.parametrize("llm", [PromptLLM(fold_errors=1), "none"])
+def test_without_a_working_llm_the_record_still_holds_the_transcript(llm, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    if llm == "none":
+        monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+        llm = LLM([FakeProvider("claude", configured=False)])
+    a, _, say = _on_demand(tmp_path, monkeypatch, llm)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    text = _record(tmp_path)
+    assert "(none, the conversation was too short)" in text and "budget0" in text
 
 
 # --- transliteration -------------------------------------------------------------------
@@ -1051,7 +1203,7 @@ def test_a_transliterate_language_segment_gets_a_transliteration_event(tmp_path,
     _speak(a, s)
     assert [e for e in events if e["type"] == "transliteration"] == [
         {"type": "transliteration", "id": s.id, "source": "Participant", "text": "Roman آپ کیسے ہیں",
-         "engine": "ollama", "ms": 0}]
+         "engine": "claude", "ms": 0}]
 
 
 @pytest.mark.parametrize("langs, lang", [(("ur",), "en"), ((), "ur")])
@@ -1076,7 +1228,7 @@ def test_the_transcript_context_keeps_the_original_script(tmp_path, monkeypatch)
 
     async def generate_json(system, prompt):
         prompts.append(prompt)
-        return {"trigger": "None", "suggestions": []}, "ollama", 0.1
+        return {"trigger": "None", "suggestions": []}, "claude", 0.1
 
     a.llm.generate_json = generate_json
     a.kb = SimpleNamespace(context=lambda q: "")
@@ -1140,7 +1292,7 @@ def _transliterated_meeting(tmp_path, monkeypatch):
                   _urdu(text="ٹھیک ہوں", t_end=t0 + 6.0)):
             a.on_segment(s)
         await _drain()
-        await a.stop_meeting()  # too few words for a memory call
+        await a.stop_meeting()  # its memory call fails
 
     asyncio.run(run())
     return a
@@ -1148,8 +1300,7 @@ def _transliterated_meeting(tmp_path, monkeypatch):
 
 def test_the_meeting_record_shows_the_transliteration_and_the_original_elsewhere(tmp_path, monkeypatch):
     _transliterated_meeting(tmp_path, monkeypatch)
-    [record] = (tmp_path / "meetings").iterdir()
-    text = record.read_text(encoding="utf-8")
+    text = _record(tmp_path)
     assert "**Teilnehmer:** Aap kaise hain" in text and "آپ کیسے ہیں" not in text
     assert "**Du:** Guten Tag." in text and "**Teilnehmer:** ٹھیک ہوں" in text
 
@@ -1185,5 +1336,4 @@ def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, 
         await a.stop_meeting()
 
     asyncio.run(run())
-    [record] = (tmp_path / "meetings").iterdir()
-    assert "**Teilnehmer:** Roman آپ کیسے ہیں" in record.read_text(encoding="utf-8")
+    assert "**Teilnehmer:** Roman آپ کیسے ہیں" in _record(tmp_path)

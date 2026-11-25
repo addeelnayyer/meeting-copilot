@@ -69,12 +69,12 @@ ECHO_WINDOW_S = 3.0
 ECHO_SIMILARITY = 80
 
 # --- LLM ---
-# Primary cloud engine (switchable live in the UI): gemini | claude | openai | grok | custom | ollama
+# The LLM, a cloud provider (switchable live in the UI): gemini | claude | openai | grok | custom
 LLM_PROVIDER = _env("LLM_PROVIDER", "gemini")
-CLOUD_TIMEOUT_S = float(_env("CLOUD_TIMEOUT", _env("GEMINI_TIMEOUT", "2.5")))  # then Ollama races in parallel
-CLOUD_HARD_TIMEOUT_S = 15  # a cloud call is abandoned (counted as an error) after this
-BREAKER_FAILS = 2
-BREAKER_COOLDOWN_S = 60
+CLOUD_HARD_TIMEOUT_S = 15  # a cloud call is abandoned after this
+RATE_LIMIT_PAUSE_S = 60  # a 429 without a retry delay pauses the provider this long
+# Settings of the removed local LLM; __main__ prints a hint when one is still set.
+IGNORED_SETTINGS = [n for n in ("OLLAMA_URL", "OLLAMA_MODEL", "CLOUD_TIMEOUT", "GEMINI_TIMEOUT") if os.environ.get(n)]
 
 GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-3.6-flash")  # 3.7 is deprecated (routes to 3.8)
@@ -98,9 +98,6 @@ CUSTOM_BASE_URL = _env("CUSTOM_BASE_URL", "")
 CUSTOM_API_KEY = _env("CUSTOM_API_KEY", "")  # optional for local gateways
 CUSTOM_MODEL = _env("CUSTOM_MODEL", "")
 
-OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = _env("OLLAMA_MODEL", "granite4:7b-a1b-h")
-OLLAMA_TIMEOUT_S = 30
 PLAIN_MAX_WAIT_S = 10  # translations and transliterations run one at a time; a line waiting longer is skipped
 
 # --- Assistant ---
@@ -111,8 +108,8 @@ PROACTIVE_MAX_PENDING_S = float(_env("PROACTIVE_MAX_WAIT", "15"))
 PROACTIVE_REPEAT_S = 60  # the same trigger again within this time is not shown again
 SINGLE_SUGGESTION = _env("SINGLE_SUGGESTION", "false").lower() in ("1", "true", "yes")
 SUGGESTION_READ_S = float(_env("SUGGESTION_READ_S", "10"))  # a new card waits this long before replacing one
-MEMORY_INTERVAL_S = int(_env("MEMORY_INTERVAL", "300"))  # rolling meeting summary every 5 min
-MEMORY_MIN_WORDS = 40  # skip the update when little was said
+MEMORY_MIN_WORDS = 40  # the meeting memory is not folded when fewer new words were said
+ASK_MIN_TURNS = 4  # a request sends the segments after the checkpoint, but at least the last this many turns
 
 # --- Knowledge / facts ---
 # Your own data (git-ignored). Starts empty; examples/ holds samples you can copy in.
@@ -148,18 +145,22 @@ WINDOW_SIZE = (520, 900)
 # --- Hotkeys ---
 # Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label
 # and question in each UI language (the question is sent to the LLM and repeated on the answer card).
+# action: "ask" sends the question, "summary" folds the meeting memory and shows it as its card.
 PRESETS = [
-    {"hotkey": "ctrl+alt+1",
+    {"id": "answer", "action": "ask", "hotkey": "ctrl+alt+1",
      "label": {"en": "What should I answer?", "de": "Was antworten?"},
      "query": {"en": "What should I answer now?", "de": "Was soll ich jetzt antworten?"}},
-    {"hotkey": "ctrl+alt+2",
+    {"id": "questions", "action": "ask", "hotkey": "ctrl+alt+2",
+     "label": {"en": "Questions", "de": "Fragen"},
+     "query": {"en": "Which questions should I ask now, given what was said?",
+               "de": "Welche Fragen sollte ich nach dem Gesagten jetzt stellen?"}},
+    {"id": "weak_points", "action": "ask", "hotkey": "ctrl+alt+3",
      "label": {"en": "Weak points", "de": "Schwächen"},
      "query": {"en": "Point out the weak points in their offer or argument.",
                "de": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."}},
-    {"hotkey": "ctrl+alt+3",
+    {"id": "summary", "action": "summary", "hotkey": "ctrl+alt+4",
      "label": {"en": "Summary", "de": "Zusammenfassung"},
-     "query": {"en": "Summarize the last few minutes in 2 sentences.",
-               "de": "Fasse die letzten Minuten in 2 Sätzen zusammen."}},
+     "query": {"en": "Summary of the meeting so far", "de": "Zusammenfassung des Meetings bis jetzt"}},
 ]
 HOTKEY_FOCUS = "ctrl+alt+space"
 HOTKEY_TRANSLATE = "ctrl+alt+t"

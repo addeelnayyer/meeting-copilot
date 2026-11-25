@@ -88,14 +88,14 @@ def register(loop, assistant, emit, win):
     def on_loop(fn, *args):
         return lambda: loop.call_soon_threadsafe(fn, *args)
 
-    def ask(query):
-        return lambda: loop.call_soon_threadsafe(lambda: loop.create_task(assistant.ask(query)))
+    def preset(preset_id):
+        return lambda: loop.call_soon_threadsafe(lambda: loop.create_task(assistant.run_preset(preset_id)))
 
     def focus():
         focus_window()
         loop.call_soon_threadsafe(emit, {"type": "focus_query"})
 
-    bindings = {preset["hotkey"]: ask(preset["query"]) for preset in assistant.presets()}
+    bindings = {p["hotkey"]: preset(p["id"]) for p in assistant.presets()}
     bindings[config.HOTKEY_FOCUS] = focus
     bindings[config.HOTKEY_TRANSLATE] = on_loop(lambda: assistant.set_mode(translate=not assistant.translate))
     bindings[config.HOTKEY_PROACTIVE] = on_loop(lambda: assistant.set_mode(proactive=not assistant.proactive))

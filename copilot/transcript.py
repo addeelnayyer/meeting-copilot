@@ -34,6 +34,11 @@ class Turn:
         return self.segments[-1].t_end
 
 
+def speaker_lines(lines):
+    """The `[source] text` lines the LLM reads, from (source, text) pairs."""
+    return "\n".join(f"[{source}] {text}" for source, text in lines)
+
+
 def _is_echo(a, b):
     """True when b (mic) is most likely a pickup of a (loopback), or vice versa."""
     short, long_ = sorted((a, b), key=len)
@@ -103,7 +108,22 @@ class Transcript:
             print(f"Session:  transliteration not logged: {e}")
 
     def render(self, n=config.MAX_TURNS):
-        return "\n".join(f"[{t.source}] {t.text}" for t in list(self.turns)[-n:])
+        return speaker_lines((t.source, t.text) for t in list(self.turns)[-n:])
+
+    def render_since(self, checkpoint, min_turns):
+        """Every segment after the checkpoint (a segment id), reaching back to at least the last
+        min_turns turns; consecutive segments of one speaker share a line."""
+        recent = [t for t in list(self.turns)[-min_turns:] if t.segments] if min_turns else []
+        first = recent[0].segments[0].id if recent else checkpoint + 1
+        lines = []
+        for s in self.segments:
+            if s.id <= checkpoint and s.id < first:
+                continue
+            if lines and lines[-1][0] == s.source:
+                lines[-1][1].append(s.text)
+            else:
+                lines.append((s.source, [s.text]))
+        return speaker_lines((source, " ".join(texts)) for source, texts in lines)
 
     def _log(self, seg):
         if not self.session_path:

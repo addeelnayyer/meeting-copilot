@@ -22,7 +22,6 @@
   .badge.cloud { background: #0f3d57; color: var(--confident); }
   #provider { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
     padding: 2px 4px; font: 600 12px "Segoe UI", sans-serif; max-width: 190px; }
-  .badge.ollama { background: #4a3500; color: var(--warn); }
   .badge.off { background: #3a1212; color: var(--err); }
   .meter { display: flex; align-items: center; gap: 4px; }
   .meter svg { width: 14px; height: 14px; }
@@ -69,6 +68,11 @@
   .card .meta { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
     display: flex; gap: 8px; margin-bottom: 4px; }
   .card .meta b { color: var(--text); }
+  .card .when { display: inline-flex; align-items: center; gap: 3px; }
+  .card .when svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
+  .sugg.memory { font-size: 14px; font-weight: 400; white-space: pre-wrap; }
+  #memory-until { margin-left: 6px; font-size: 11px; color: var(--dim); }
+  #memory-err { margin-left: 6px; font-size: 11px; color: var(--err); }
   .card.answer { border-left-color: #b48cff; }
   .sugg { font-size: 23px; font-weight: 700; line-height: 1.3; margin: 4px 0; }
   .sugg + .sugg { margin-top: 10px; }
@@ -107,7 +111,7 @@
 <body>
 <header>
   <select id="provider" data-t-title="provider.title"></select>
-  <span id="engine" class="badge" data-t-title="engine.title">-</span>
+  <span id="engine" class="badge cloud" data-t-title="engine.title">-</span>
   <span id="lat"></span>
   <span id="cnote" style="color:var(--warn)"></span>
   <span id="stt" class="badge" data-t="stt.idle"></span>
@@ -154,7 +158,7 @@
 <div id="err"></div>
 <div id="transcript"></div>
 <details><summary data-t="facts.title"></summary><pre id="facts" data-t="none_yet"></pre></details>
-<details><summary data-t="memory.title"></summary><pre id="memory" data-t="none_yet"></pre></details>
+<details><summary><span data-t="memory.title"></span><span id="memory-until"></span><span id="memory-err"></span></summary><pre id="memory" data-t="none_yet"></pre></details>
 <div id="presets"></div>
 <form id="ask">
   <input id="q" data-t-placeholder="ask.placeholder" autocomplete="off">
@@ -165,8 +169,8 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const MAX_CARDS = 6;
-let ws, mode = { proactive: true, translate: false }, lastTurn = null;
-let meeting = { active: false, mic: true, error: "" }, kb = null, ollamaNote = "", saved = "";
+let ws, mode = { proactive: false, translate: false }, lastTurn = null;
+let meeting = { active: false, mic: true, error: "" }, kb = null, saved = "";
 let win = { on_top: true, opacity: 1 };
 const MIC_ICONS = { on: '<path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>', off: '<path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5.1 2.1"/><path d="M5 11a7 7 0 0 0 11.4 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18"/>' };
 // Reading time: a new proactive card waits until the current one has been shown for readMs,
@@ -174,6 +178,9 @@ const MIC_ICONS = { on: '<path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 
 let readMs = 10000, holdUntil = 0, userSpokeAt = 0, pinned = null, pending = null;
 const names = {};  // provider id -> label, filled by the "providers" event
 const engineName = (id) => names[id] || id;
+// Times from the server (seconds since the epoch) as HH:MM in the window's language.
+const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString(document.documentElement.lang || [], { hour: "2-digit", minute: "2-digit" });
+const CLOCK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 // UI text: the "strings" event (always the first) holds the table; the page itself only has ids.
 let S = {};
 const t = (id, vars = {}) => (S[id] ?? id).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
@@ -199,12 +206,15 @@ function card(ev, isAnswer) {
   el.title = t("card.title");
   el.onclick = () => pin(el);
   const label = isAnswer ? `${esc(t("card.question"))} <b>${esc(ev.query)}</b>` : `<b>${esc(ev.trigger)}</b>`;
-  el.innerHTML = `<div class="meta">${label}<span>${esc(engineName(ev.engine))} ${ev.ms} ms</span>` +
+  const when = ev.ts ? `<span class="when" title="${esc(t("card.time", { time: hhmm(ev.ts) }))}">${CLOCK_ICON}${esc(hhmm(ev.ts))}</span>` : "";
+  const engine = ev.engine ? `<span>${esc(engineName(ev.engine))} ${ev.ms} ms</span>` : "";
+  el.innerHTML = `<div class="meta">${label}${when}${engine}` +
     `<span class="pin-label">${esc(t("card.pinned"))}</span></div>` +
+    (ev.summary ? (ev.suggestions || []).map((s) => `<div class="sugg memory">${esc(s.text)}</div>`).join("") :
     (ev.suggestions || []).map((s) => {
       const tone = String(s.tone || "").toLowerCase().replace(/\s+/g, "-");
       return `<div class="sugg t-${esc(tone)}"><small>${esc(s.intent)} · ${esc(s.tone)}</small>${esc(s.text)}</div>`;
-    }).join("");
+    }).join(""));
   const cards = $("cards");
   cards.prepend(el);
   [...cards.children].forEach((c, i) => c.classList.toggle("old", i > 0));
@@ -315,7 +325,6 @@ function renderNotice() {
   if (meeting.error) items.push(`<div class="n err">${esc(t("audio.error", { error: meeting.error }))}</div>`);
   if (saved) items.push(`<div class="n info">${esc(t("saved.note", { name: saved.split(/[\\/]/).pop() }))}
     ${folder("meetings")}</div>`);
-  if (ollamaNote) items.push(`<div class="n warn">${esc(ollamaNote)}</div>`);
   if (kb && kb.files === 0) items.push(`<div class="n info">${esc(t("kb.empty"))}
     ${folder("notes")}</div>`);
   $("notice").innerHTML = items.join("");
@@ -335,7 +344,7 @@ function presets(ev) {
     b.type = "button";
     b.title = p.query;
     b.innerHTML = `${esc(p.label)}<kbd>${esc(p.hotkey.replace("ctrl", t("key.ctrl")).replace(/\+(\w)/g, (m, c) => "+" + c.toUpperCase()))}</kbd>`;
-    b.onclick = () => ask(p.query);
+    b.onclick = () => send({ type: "preset", id: p.id });
     box.append(b);
   }
 }
@@ -346,23 +355,15 @@ const busy = (on) => document.querySelectorAll("#presets button").forEach((b) =>
 function providers(ev) {
   const sel = $("provider");
   sel.innerHTML = "";
-  let active = ev.active;
   for (const p of ev.list) {
     names[p.id] = p.label;
-    // Every installed Ollama model is its own entry ("ollama:<model>").
-    const models = p.id === "ollama" && ev.ollama_models.length ? ev.ollama_models : [null];
-    for (const m of models) {
-      const o = document.createElement("option");
-      o.value = m ? `ollama:${m}` : p.id;
-      o.disabled = !p.configured;
-      o.textContent = p.configured ? `${p.label} · ${m || p.model}` : t("provider.no_key", { label: p.label });
-      sel.append(o);
-      if (m && m === p.model && active === "ollama") active = o.value;
-    }
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.disabled = !p.configured;
+    o.textContent = p.configured ? `${p.label} · ${p.model}` : t("provider.no_key", { label: p.label });
+    sel.append(o);
   }
-  sel.value = active;
-  ollamaNote = ev.ollama_note;
-  renderNotice();
+  sel.value = ev.active;
 }
 
 const handlers = {
@@ -376,7 +377,7 @@ const handlers = {
     if (turn && !turn.querySelector(".seg")) turn.remove(); },
   suggestion,
   ui: (ev) => { readMs = ev.read_s * 1000; document.body.classList.toggle("single", ev.single); },
-  answer: (ev) => { busy(false); card(ev, true); },
+  answer: (ev) => { busy(false); $("err").textContent = ""; card(ev, true); },
   asking: (ev) => { busy(true); $("err").textContent = t("asking", { query: ev.query }); },
   mode: setMode,
   meeting: (ev) => { meeting = ev; renderMeeting(); },
@@ -386,9 +387,9 @@ const handlers = {
     $("pin").classList.toggle("on", ev.on_top); $("opacity").value = Math.round(ev.opacity * 100); },
   kb: (ev) => { kb = ev; renderNotice(); },
   facts: (ev) => { $("facts").textContent = ev.text; },
-  memory: (ev) => { $("memory").textContent = ev.text; },
-  engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
-    e.className = "badge " + (ev.engine === "ollama" ? "ollama" : "cloud");
+  memory: (ev) => { $("memory").textContent = ev.text || t("none_yet"); $("memory-err").textContent = "";
+    $("memory-until").textContent = ev.until ? t("memory.until", { time: hhmm(ev.until) }) : ""; },
+  engine: (ev) => { $("engine").textContent = engineName(ev.engine);
     $("lat").textContent = ev.ms + " ms"; $("err").textContent = ""; },
   stt: (ev) => { const e = $("stt"); e.textContent = t(ev.ready ? "stt.ready" : ev.idle ? "stt.idle" : "stt.loading");
     e.className = "badge" + (ev.ready || ev.idle ? "" : " off"); e.title = ev.engine || "";
@@ -398,7 +399,9 @@ const handlers = {
     $("cnote").textContent = ev.cloud_note || "";
     if (ev.user_speaking) userSpokeAt = Date.now(); },
   focus_query: () => { $("q").focus(); $("q").select(); },
-  error: (ev) => { busy(false); $("err").textContent = ev.text; },
+  // A background fold's error (source "memory") leaves a request in flight and its buttons alone.
+  error: (ev) => { if (ev.source === "memory") { $("memory-err").textContent = ev.text; return; }
+    busy(false); $("err").textContent = ev.text; },
 };
 
 function connect() {

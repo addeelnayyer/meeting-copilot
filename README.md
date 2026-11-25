@@ -7,7 +7,7 @@ A local, real-time AI meeting assistant for Windows, Linux and macOS. It capture
 
 <p align="center"><img src="docs/screenshot.webp" alt="Meeting Copilot window: suggestion cards, live transcript with translation, preset buttons" width="380"></p>
 
-Speech recognition, the knowledge base and the fallback LLM all run locally. Only the prompts sent to the cloud AI you choose (if any) leave your machine.
+Speech recognition and the knowledge base run locally. Only the prompts sent to the cloud AI you choose (if any) leave your machine.
 
 > **Upgrading with a German window?** The window is now English by default. Add `UI_LANGUAGE=de` to your `.env` to keep the German buttons, notes, presets and meeting record (see [Languages](#languages) and the [changelog](CHANGELOG.md)).
 
@@ -15,15 +15,15 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 
 - **Dual-stream capture** (mic + system audio: WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux, BlackHole on macOS), Silero VAD, 1.5-2.5 s speech chunks
 - **Local transcription** with `large-v3-turbo`: faster-whisper on CUDA (about 360 ms per chunk on an RTX 4060), WhisperKit on the GPU of Apple Silicon Macs (about 290 ms on an M4 Max, reusing MacWhisper's model if you have it), otherwise `small` on the CPU (see [Speech recognition](#speech-recognition)); German and English by default, any of Whisper's ~99 languages via `LANGUAGES` (see [Languages](#languages))
-- **Proactive suggestions** for questions, objections and action items (1-2 sentences, ready to say)
-- **Push-to-ask**: preset buttons, global hotkeys, or a typed question ("What should I answer?")
+- **On demand**: the AI is asked only when you click a preset button, press its hotkey or type a question ("What should I answer?", "Questions", "Weak points", "Summary")
+- **Proactive suggestions** for questions, objections and action items (1-2 sentences, ready to say), off at the start of every meeting
 - **Live translation** into your language (German by default) and from it into the second one
-- **Meeting records**: every meeting is saved locally as a Markdown file with summary, facts, suggestions and the full transcript
+- **Meeting records**: every meeting is saved locally as a Markdown file with the meeting memory, facts, suggestions and the full transcript
 - **Always on top** with adjustable opacity, built in (Windows and Linux/X11)
 - **Knowledge base (RAG)** over your own Markdown/JSON notes, plus keyword flashcards
 - **Facts sheet** (budgets, names, dates) extracted automatically and kept across meetings
-- **Meeting memory**: a rolling summary every 5 minutes, so the AI remembers the whole meeting and not just the last few sentences
-- **Bring your own AI**: Gemini, Claude, OpenAI, Grok, or any OpenAI-compatible URL (OmniRoute, OpenRouter, LiteLLM, LM Studio ...), switchable live in the window. **Local Ollama** races in after 2.5 s and takes over when offline or out of quota
+- **Meeting memory**: a running record of the meeting so far, updated after each of your requests, so the AI remembers the whole meeting while each request sends only what was said since the last one
+- **Bring your own AI**: Gemini, Claude, OpenAI, Grok, or any OpenAI-compatible URL (OmniRoute, OpenRouter, LiteLLM, LM Studio ...), switchable live in the window. No language model runs on your machine; only speech recognition is local
 - Two roles: client/sales calls (`PROMPT=system`) or job interviews and meetings at work (`PROMPT=interview`)
 
 ## Requirements
@@ -31,16 +31,7 @@ Speech recognition, the knowledge base and the fallback LLM all run locally. Onl
 - Windows 10/11, Linux (PulseAudio or PipeWire) or macOS 12+
 - **Recommended:** an NVIDIA GPU (tested on an RTX 4060 Laptop, 8 GB) or an Apple Silicon Mac with [Homebrew](https://brew.sh). Otherwise speech recognition runs on the CPU (see [Speech recognition](#speech-recognition))
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 and all dependencies, including the CUDA libraries on Windows)
-- [Ollama](https://ollama.com) with a local LLM for the fallback. Every model you have pulled shows up in the AI menu in the window (or set `OLLAMA_MODEL`). The window warns when Ollama isn't running or the model is missing. Measured choices (`copilot.llm_bench` on an M4 Max, 48 GB; see [Tools](#tools)):
-  - **Small machines (8-16 GB), the default:** `granite4:7b-a1b-h`, about 6 GB loaded; suggestions take about 1.7 s (p95 1.9 s). It gets figures wrong in German answers and Roman Urdu.
-    ```sh
-    ollama pull granite4:7b-a1b-h
-    ```
-  - **Large machines (48 GB or more), recommended:** `gemma4:26b`, about 23 GB loaded. The only tested model with natural Roman Urdu that keeps the numbers; suggestions take about 2.4 s (p95 3.1 s).
-    ```sh
-    ollama pull gemma4:26b
-    ```
-- An API key for at least one cloud AI (optional; without one everything runs on Ollama). A meeting makes hundreds of requests, so free tiers such as Gemini's (about 20 requests per day per model) are not enough.
+- An API key for at least one cloud AI (optional; without one the copilot only transcribes, and the window says that no LLM is configured). A meeting makes hundreds of requests, so free tiers such as Gemini's (about 20 requests per day per model) are not enough.
 - Chrome, Edge or Brave for the app window (otherwise the default browser opens)
 - **Headphones recommended.** With speakers the mic picks up the participants. The app suppresses obvious echoes, but headphones are cleaner.
 
@@ -60,7 +51,9 @@ curl -LsSf https://raw.githubusercontent.com/masrisystems/meeting-copilot/main/i
 
 The app goes to `~/meeting-copilot` (set `MEETING_COPILOT_DIR` to change that). From a cloned repo, run `./install.sh` or `install.ps1` inside it instead. Re-run the installer to update; your `.env`, notes and sessions are kept. `--uninstall` (`-Uninstall` on Windows) removes the icons.
 
-Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. Ollama is not installed for you (see [Requirements](#requirements)). On an Apple Silicon Mac the installer also runs `brew install whisperkit-cli` for the WhisperKit STT engine; without Homebrew it prints a hint and the copilot uses faster-whisper on the CPU.
+Earlier versions used [Ollama](https://ollama.com) as a local fallback. The copilot no longer uses it: if you installed Ollama only for the copilot, you can uninstall it, and remove any `OLLAMA_*` or `CLOUD_TIMEOUT` lines from your `.env` (they are ignored, with a hint in the console).
+
+Started from the icon, the copilot quits when you close its window, a second double-click brings back the running one, and its output goes to `sessions/copilot.log`. On an Apple Silicon Mac the installer also runs `brew install whisperkit-cli` for the WhisperKit STT engine; without Homebrew it prints a hint and the copilot uses faster-whisper on the CPU.
 
 ## Manual setup
 
@@ -82,7 +75,6 @@ Set the keys you have in `.env`. `LLM_PROVIDER` picks the engine at startup, and
 | `openai` | `OPENAI_API_KEY`, `OPENAI_MODEL` (`OPENAI_BASE_URL` for Azure/proxies) | `gpt-6-luna` |
 | `grok` | `XAI_API_KEY`, `GROK_MODEL` | `grok-4.7` |
 | `custom` | `CUSTOM_BASE_URL`, `CUSTOM_MODEL`, optional `CUSTOM_API_KEY`, `CUSTOM_LABEL` | any OpenAI-compatible endpoint |
-| `ollama` | `OLLAMA_MODEL` | local only, no cloud |
 
 Example for [OmniRoute](https://github.com/diegosouzapw/OmniRoute) or another gateway:
 ```ini
@@ -159,7 +151,7 @@ UI_LANGUAGE=de            # German window (default: en)
 
 `TRANSLITERATE` (comma-separated, empty by default) lists languages whose lines you would rather read in Latin script. Such a line appears at once in its own script and is replaced in place by its transliteration (for Urdu: Roman Urdu) when the LLM returns it; English words, names and numbers stay as they are. It uses the same LLM and the same one-at-a-time queue as translation, and the two are independent: with both on, a line shows both. The transcript the LLM, facts and memory work with keeps the original script. The saved meeting record shows the transliteration (the original for lines that got none), and the session log keeps the original with the transliteration added to its entry.
 
-`UI_LANGUAGE` (`en` by default, or `de`) sets the language of everything the copilot itself writes for you: the window's buttons, tooltips and hints, the status and error notes (for example that Ollama isn't running), the preset buttons and the questions they send, and the meeting record's headings. An unknown value falls back to English with a hint in the console. It does not change the suggestions (`REPLY_LANGUAGE`), the meeting memory or the transcript, so an English window can show suggestions in any language. The window title stays "Meeting Copilot" in every language.
+`UI_LANGUAGE` (`en` by default, or `de`) sets the language of everything the copilot itself writes for you: the window's buttons, tooltips and hints, the status and error notes (for example that no LLM is configured), the preset buttons and the questions they send, and the meeting record's headings. An unknown value falls back to English with a hint in the console. It does not change the suggestions (`REPLY_LANGUAGE`), the meeting memory or the transcript, so an English window can show suggestions in any language. The window title stays "Meeting Copilot" in every language.
 
 The suggestion prompts are written for German client calls and German/English interviews. For notes in other languages, switch to a multilingual embedding model, e.g. `EMBEDDING_MODEL=intfloat/multilingual-e5-large` (the index is rebuilt automatically). The `small` and `base` CPU models are less accurate for languages with little training data.
 
@@ -169,7 +161,7 @@ The suggestion prompts are written for German client calls and German/English in
 uv run python -m copilot
 ```
 
-This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not listen until you click **Start meeting**. Each meeting gets a fresh transcript and memory (the facts sheet is kept), and no audio device is opened while no meeting runs. **Mic on/off** mutes only your microphone; the participants are still transcribed. The window uses Chrome, Edge, Brave or Chromium (otherwise the default browser). It stays on top of the call by default: the pin button in the header (`Ctrl+Alt+O`) toggles that, and the slider next to it sets the opacity (40-100 %). Both are remembered in `settings.json`. When you stop a meeting (or quit during one), it is saved as `meetings/Meeting <date> <time>.md`: final summary, facts, every suggestion and answer, and the full transcript. The document button in the header opens the folder. Set `MEETINGS_DIR` in `.env` to collect them somewhere else, e.g. in your Obsidian vault. Options:
+This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not listen until you click **Start meeting**. Each meeting gets a fresh transcript and memory (the facts sheet is kept), and no audio device is opened while no meeting runs. **Mic on/off** mutes only your microphone; the participants are still transcribed. The window uses Chrome, Edge, Brave or Chromium (otherwise the default browser). It stays on top of the call by default: the pin button in the header (`Ctrl+Alt+O`) toggles that, and the slider next to it sets the opacity (40-100 %). Both are remembered in `settings.json`. When you stop a meeting (or quit during one), it is saved as `meetings/Meeting <date> <time>.md`: the meeting memory, facts, every suggestion and answer, and the full transcript. The document button in the header opens the folder. Set `MEETINGS_DIR` in `.env` to collect them somewhere else, e.g. in your Obsidian vault. Options:
 
 | Flag | Effect |
 | --- | --- |
@@ -185,17 +177,18 @@ This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not 
 | Keys | Action |
 | --- | --- |
 | `Ctrl+Alt+1` | "What should I answer now?" (button "What should I answer?") |
-| `Ctrl+Alt+2` | "Point out the weak points in their offer or argument." (button "Weak points") |
-| `Ctrl+Alt+3` | "Summarize the last few minutes in 2 sentences." (button "Summary") |
+| `Ctrl+Alt+2` | "Which questions should I ask now, given what was said?" (button "Questions") |
+| `Ctrl+Alt+3` | "Point out the weak points in their offer or argument." (button "Weak points") |
+| `Ctrl+Alt+4` | Update the meeting memory and show it as a card (button "Summary") |
 | `Ctrl+Alt+Space` | Focus the question box to type your own question |
 | `Ctrl+Alt+T` | Toggle live translation |
-| `Ctrl+Alt+P` | Pause/resume proactive suggestions |
+| `Ctrl+Alt+P` | Turn proactive suggestions on/off (off at the start of every meeting) |
 | `Ctrl+Alt+M` | Mute/unmute your microphone (the participants are still heard) |
 | `Ctrl+Alt+O` | Keep the window on top, or not |
 
 The preset texts above are those of `UI_LANGUAGE=en`, the default; `UI_LANGUAGE=de` shows the German
 buttons and sends the German questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
-one hotkey each, and a label and question per UI language.
+one hotkey each, and a label and question per UI language. Each card shows the time it was asked.
 
 ## How it works
 
@@ -204,18 +197,18 @@ mic ──────┐                                                       
           ├─ Silero VAD ─ 1.5–2.5 s chunks ─ faster-whisper or WhisperKit ─ transcript ─┼─ push-to-ask answers
 loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  (turns)     └─ translations
                                                                                 │
-                facts.json + meeting memory (5 min) + knowledge base (RAG) + last 15 turns
+        facts.json + meeting memory + knowledge base (RAG) + segments since the checkpoint
                                                                                 │
-              Gemini | Claude | OpenAI | Grok | custom URL ──(> 2.5 s: race)── Ollama
+                       Gemini | Claude | OpenAI | Grok | custom URL
 ```
 
 - **Chunking:** a chunk ends at a pause once it is at least 1.5 s long, and is force-cut at 2.5 s at the quietest point. Short replies ("Ja.") are still sent once the speaker stops.
 - **Transcription:** the language (one of `LANGUAGES`) is detected per speaker and re-checked every few chunks. Detecting on every chunk would add about 240 ms. WhisperKit reports no language probabilities, so a detected language outside `LANGUAGES` is ignored and the chunk is transcribed again in the speaker's last language. WhisperKit gets no text prompt from the previous sentences (faster-whisper does): it slowed the decoder and caused repetition loops, and segments that look like a loop are dropped.
-- **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
+- **Proactive mode** is off at the start of every meeting (button "Proactive", `Ctrl+Alt+P`). When on, it sends the meeting memory and the last 15 turns, and it never updates the meeting memory. It reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
-- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Memory" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
-- **Failover:** if the cloud AI hasn't answered within 2.5 s (`CLOUD_TIMEOUT`), Ollama starts in parallel and the first finished answer wins. If the cloud errors, the request goes to Ollama straight away. On repeated errors the cloud AI pauses for 60 s; on a rate-limit or quota error (429) it pauses for as long as the provider says. The header shows which engine answered and why the cloud is off. Ollama loads its model into RAM only when it is needed: at startup or when you pick it in the window if it is the primary LLM, otherwise on the first request it gets after a slow or failing cloud call (that first fallback answer takes a few seconds longer).
+- **Meeting memory:** the LLM is called only when you ask. A request sends the meeting memory (`[MEMORY]`) plus every segment since the checkpoint, the point the meeting memory covers (at least the last 4 turns, `ASK_MIN_TURNS`). Once the answer is shown, those segments are folded into the meeting memory in the background and the checkpoint moves on; a failed update keeps the checkpoint, so the next request sends and folds the larger set, and fewer than 40 new words are not folded. The Summary button is that update, shown as a card. Stopping a meeting folds the rest once for the meeting record. The memory covers the discussion, decisions, open points and mood, is shown under "Meeting memory" with the checkpoint time ("Meeting memory up to 14:32"), and is saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
+- **LLM:** every request goes to the provider picked in the window, and nothing answers in its place. A failed request is explained in the header (timeout, quota, missing key, refusal), and the next request tries again. On a rate-limit or quota error (429) the provider pauses for as long as it says (60 s when it doesn't), and requests during the pause fail at once with a note saying when it ends.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting. A transliterated segment's entry also carries its `transliteration`.
 
 The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.md` for interviews).
@@ -225,7 +218,6 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
 uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine, --reference, --requests: see below)
-uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)

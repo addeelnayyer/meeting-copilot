@@ -1,10 +1,11 @@
-"""Rolling meeting memory: every MEMORY_INTERVAL_S the new part of the transcript is
-folded into a compact summary, so the LLM still knows what happened beyond the last
-MAX_TURNS turns."""
+"""Meeting memory: the segments after the checkpoint are folded into it after each request the
+user makes and once when the meeting stops, so the LLM still knows what happened before the
+segments it is sent."""
 
 import asyncio
 
 from . import config
+from .transcript import speaker_lines
 
 MEMORY_SYSTEM = """You maintain the running memory of a live meeting for an AI meeting advisor.
 You get the current memory and the new transcript lines since the last update.
@@ -37,41 +38,56 @@ class Memory:
     def __init__(self, path=None):
         self.text = ""
         self.path = path  # written next to the session log
-        self._cursor = 0  # id of the last segment already in the memory
+        self.checkpoint = 0  # id of the last segment already in the memory
+        self.until = None  # time.time() of that segment, shown in the window
+        self._task = None  # the running fold: at most one at a time
 
     def pending(self, segments):
-        return [s for s in segments if s.id > self._cursor]
+        return [s for s in segments if s.id > self.checkpoint]
 
     def prompt(self, segments):
-        lines = "\n".join(f"[{s.source}] {s.text}" for s in segments)
+        lines = speaker_lines((s.source, s.text) for s in segments)
         return f"[CURRENT MEMORY]\n{self.text or '(leer)'}\n\n[NEW TRANSCRIPT]\n{lines}"
 
-    def update(self, text, segments):
+    async def update(self, text, segments):
         self.text = text.strip()
-        self._cursor = segments[-1].id
-        if self.path:
-            self.path.write_text(self.text, encoding="utf-8")
+        self.checkpoint, self.until = segments[-1].id, segments[-1].ts
+        if self.path:  # off the loop
+            await asyncio.to_thread(self.path.write_text, self.text, encoding="utf-8")
 
     def render(self):
         return self.text or "(noch keine)"
 
+    def event(self, **extra):
+        return {"type": "memory", "text": self.text, "until": self.until, **extra}
 
-async def run(assistant, interval=config.MEMORY_INTERVAL_S):
-    """Background loop started by __main__."""
-    while True:
-        await asyncio.sleep(interval)
-        await summarize(assistant)
+    # --- folding -------------------------------------------------------------------
+    def folding(self):
+        """True while a fold runs."""
+        return self._task is not None and not self._task.done()
 
+    async def fold(self, llm, segments, min_words=config.MEMORY_MIN_WORDS, wanted=lambda: True):
+        """Fold the segments after the checkpoint into the memory and move the checkpoint to the
+        last of them. One fold at a time: a running fold is waited for first, then nothing is done
+        unless `wanted()` still holds. Returns (engine, secs), or None when skipped (not wanted, or
+        fewer than `min_words` new words). An LLM failure is raised and leaves the checkpoint where
+        it was."""
+        while self.folding():
+            await asyncio.wait({self._task})
+        if not wanted():
+            return None
+        self._task = asyncio.ensure_future(self._fold(llm, segments, min_words))
+        return await self._task
 
-async def summarize(assistant):
-    memory, transcript = assistant.memory, assistant.transcript
-    new = memory.pending(transcript.segments)
-    if sum(len(s.text.split()) for s in new) < config.MEMORY_MIN_WORDS:
-        return
-    try:
-        text, engine, secs = await assistant.llm.generate(system_prompt(config.REPLY_LANGUAGE), memory.prompt(new))
-    except Exception as e:
-        assistant.emit({"type": "error", "text": f"Memory: {e}"})
-        return
-    memory.update(text, new)
-    assistant.emit({"type": "memory", "text": memory.text, "engine": engine, "ms": round(secs * 1000)})
+    def cancel(self):
+        """Cancel the running fold, if any."""
+        if self._task:
+            self._task.cancel()
+
+    async def _fold(self, llm, segments, min_words):
+        new = self.pending(segments)
+        if sum(len(s.text.split()) for s in new) < min_words:
+            return None
+        text, engine, secs = await llm.generate(system_prompt(config.REPLY_LANGUAGE), self.prompt(new))
+        await self.update(text, new)
+        return engine, secs

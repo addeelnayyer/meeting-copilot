@@ -26,20 +26,16 @@ _Avoid_: Urdu (for this form)
 ## Assistant
 
 **LLM**:
-The language model that writes suggestions, answers, translations and the meeting memory.
-_Avoid_: model (unqualified), AI
-
-**Local LLM**:
-An LLM that runs on the user's machine rather than with a cloud provider.
-_Avoid_: Ollama (for the model), offline model
+The cloud language model, chosen by the user, that writes suggestions, answers, translations and the meeting memory. Nothing of it runs on the user's machine.
+_Avoid_: model (unqualified), AI, primary LLM
 
 **Meeting memory**:
 The rolling summary of the meeting so far, written by the LLM and kept in the meeting record.
 _Avoid_: memory (unqualified), summary (for the running one); say RAM for the machine's working memory
 
-**Fallback**:
-The local LLM's role when the primary LLM is slow, fails or is out of quota.
-_Avoid_: backup, secondary
+**Checkpoint**:
+The point in the meeting up to which the meeting memory covers the transcript. It moves forward when the meeting memory is updated after the user asks the LLM something, and when the meeting stops.
+_Avoid_: timestamp, cursor
 
 ## People
 

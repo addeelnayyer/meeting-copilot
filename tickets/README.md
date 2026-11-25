@@ -17,3 +17,7 @@ Feature tickets in the [Echo ticket format](https://masrisystems.com/brain). New
 | 011 | [Linux and macOS support](completed/011_linux-and-macos-support.md) | feature | completed |
 | 012 | [Launch-ready README, repo metadata and positioning](backlog/012_launch-ready-readme-and-positioning.md) | chore | proposed |
 | 013 | [WhisperKit STT engine on Apple Silicon](completed/013_whisperkit-stt-engine-on-apple-silicon.md) | feature | completed |
+| 014 | [WhisperKit server RAM ceiling](backlog/014_whisperkit-server-ram-ceiling.md) | bug | proposed |
+| 015 | [Free the STT model between meetings](backlog/015_free-stt-model-between-meetings.md) | feature | proposed |
+| 016 | [Warm up Ollama only when it is needed](backlog/016_ollama-warm-up-only-when-needed.md) | feature | proposed |
+| 017 | [Lighter English STT model on Apple Silicon](backlog/017_lighter-english-stt-model.md) | feature | proposed |

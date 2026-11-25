@@ -214,7 +214,7 @@ class OllamaProvider(Provider):
         return r.json()["message"]["content"]
 
     async def warmup(self):
-        """Load the model into memory so the first fallback isn't a cold start."""
+        """Load the model into RAM so the first fallback isn't a cold start."""
         try:
             await self._chat(messages=[])
         except httpx.HTTPError as e:

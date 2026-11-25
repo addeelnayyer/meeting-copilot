@@ -12,18 +12,16 @@ is off during the loop, so the raw growth shows; --keep-replacement leaves it on
 """
 
 import argparse
-import os
 import re
-import sys
 import time
 
 import numpy as np
 
-from . import config, whisperkit
+from . import config
+from .ram import GB, gb
 from .stt import STT_ENGINES, build_stt_engine
 from .vad import Chunker, SileroStream
 
-GB = whisperkit.GB
 SAMPLE_EVERY = 100  # requests between two RSS samples in the loop
 
 WORD = re.compile(r"[\w']+")
@@ -53,39 +51,6 @@ def growth_per_1000(samples):
     if np.ptp(x) == 0:
         return None
     return float(np.polyfit(x, y, 1)[0] * 1000)
-
-
-def process_rss():
-    """Resident memory of this process in bytes; None when unreadable."""
-    if sys.platform != "win32":
-        return whisperkit.rss(os.getpid())
-    import ctypes
-    from ctypes import wintypes
-
-    class Counters(ctypes.Structure):
-        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
-            (name, ctypes.c_size_t) for name in (
-                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
-                "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
-
-    c = Counters(cb=ctypes.sizeof(Counters))
-    kernel32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
-    ok = psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb)
-    return c.WorkingSetSize if ok else None
-
-
-def engine_rss(engine):
-    """The RSS the engine holds: its whisperkit-cli server's (the one serving now, also after a
-    restart or replacement), else this process's."""
-    if hasattr(engine, "server"):
-        return engine.server.rss()
-    return process_rss()
-
-
-def _gb(size):
-    return "?" if size is None else f"{size / GB:.2f} GB"
 
 
 def _latency(lat):
@@ -121,12 +86,11 @@ def main(path, source="Participant", engine=None, reference=None, requests=None,
     print(f"{len(chunks)} chunks, durations {[round(c.duration, 2) for c in chunks]}")
     if not chunks:
         return
-    if requests and not keep_replacement:
-        config.WHISPERKIT_MAX_GROWTH_GB = float("inf")  # read after every request: never replaced
     ref = open(reference, encoding="utf-8").read() if reference else None
 
     t = time.perf_counter()
-    stt = build_stt_engine(engine)
+    replacement_off = requests and not keep_replacement
+    stt = build_stt_engine(engine, max_growth_gb=float("inf") if replacement_off else None)
     print(f"{stt.name}: model load and warm-up {time.perf_counter() - t:.1f}s")
     try:
         if requests:
@@ -152,10 +116,9 @@ def _once(stt, chunks, ref):
 
 
 def _loop(stt, chunks, requests, ref, keep_replacement):
-    server = getattr(stt, "server", None)
-    warm = engine_rss(stt)
-    who = "whisperkit-cli server" if server is not None else "this process"
-    print(f"RSS of {who} after warm-up {_gb(warm)}; server replacement "
+    who = stt.rss_of  # changes when another whisperkit-cli server takes over
+    warm = stt.rss()
+    print(f"RSS of {who} after warm-up {gb(warm)}; server replacement "
           f"{'on' if keep_replacement else 'off'}; {requests} requests")
     samples = [(0, warm)] if warm is not None else []
     lat, texts, switches = [], [], 0
@@ -166,19 +129,19 @@ def _loop(stt, chunks, requests, ref, keep_replacement):
         lat.append(time.perf_counter() - t)
         if n <= len(chunks) and seg:
             texts.append(seg.text)
-        if server is not None and stt.server is not server:  # a replacement or a crash restart
-            server, switches = stt.server, switches + 1
+        if stt.rss_of != who:  # a replacement or a crash restart
+            who, switches = stt.rss_of, switches + 1
             samples = []  # from here on: the growth of the server now serving
-            print(f"request {n}: a new whisperkit-cli server serves from here")
+            print(f"request {n}: {who} serves from here")
         if n % SAMPLE_EVERY == 0 or n == requests:
-            rss = engine_rss(stt)
+            rss = stt.rss()
             if rss is not None:
                 samples.append((n, rss))
-            print(f"request {n}/{requests}  RSS {_gb(rss)}  {_latency(lat[-SAMPLE_EVERY:])}", flush=True)
+            print(f"request {n}/{requests}  RSS {gb(rss)}  {_latency(lat[-SAMPLE_EVERY:])}", flush=True)
 
     growth = growth_per_1000(samples)
     print(f"\n{requests} requests through {stt.name}")
-    print(f"RSS after warm-up {_gb(warm)}, at the end {_gb(samples[-1][1] if samples else None)}")
+    print(f"RSS after warm-up {gb(warm)}, at the end {gb(samples[-1][1] if samples else None)}")
     if growth is None:
         print("RSS growth per 1,000 requests: unknown (too few RSS samples)")
     else:

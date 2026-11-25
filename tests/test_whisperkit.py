@@ -517,7 +517,7 @@ def test_server_past_its_growth_limit_is_replaced_without_losing_a_chunk(worker,
     assert chunk_requests(old) + chunk_requests(new) == len(texts)
     assert worker.launcher.launches == 2
     lines = [line for line in capsys.readouterr().out.splitlines() if "replaced" in line]
-    assert len(lines) == 1 and "3.6 GB" in lines[0] and "2.0 GB" in lines[0]
+    assert len(lines) == 1 and "3.60 GB" in lines[0] and "2.00 GB" in lines[0]
 
 
 def test_after_a_crash_restart_growth_counts_from_the_new_servers_warm_up(worker):
@@ -532,6 +532,38 @@ def test_after_a_crash_restart_growth_counts_from_the_new_servers_warm_up(worker
     while worker.launcher.launches < 3:
         assert time.monotonic() < deadline, "no replacement was started"
         time.sleep(0.01)
+
+
+def test_rss_follows_the_server_serving_now():
+    launcher = Launcher()
+    engine = whisperkit.WhisperKitEngine(launch=launcher)
+    try:
+        engine.warm_up()
+        first = engine.rss_of
+        launcher.servers[0].rss_bytes = 3 * GB
+        assert engine.rss() == 3 * GB
+        launcher.servers[0].kill()
+        engine.transcribe(chunk())  # restarted
+        assert engine.rss() == 2 * GB and engine.rss_of != first
+    finally:
+        engine.close()
+        for s in launcher.servers:
+            s.close()
+
+
+def test_an_infinite_growth_limit_never_replaces_the_server():
+    launcher = Launcher()
+    engine = whisperkit.WhisperKitEngine(launch=launcher, max_growth_gb=float("inf"))
+    try:
+        engine.warm_up()
+        launcher.servers[0].rss_bytes += 100 * GB
+        for _ in range(3):
+            engine.transcribe(chunk())
+        assert launcher.launches == 1
+    finally:
+        engine.close()
+        for s in launcher.servers:
+            s.close()
 
 
 def test_failed_replacement_keeps_the_old_server_and_is_retried_without_using_the_crash_restart(worker):

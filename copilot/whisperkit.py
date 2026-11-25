@@ -15,12 +15,12 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from . import config
+from . import config, ram
+from .ram import GB
 from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
 from .strings import t
 
 HOST = "127.0.0.1"
-GB = 1024 ** 3
 
 SPECIAL_TOKEN = re.compile(r"<\|[^|]*\|>")
 
@@ -101,15 +101,6 @@ def server_command(binary, model, port):
             "--audio-encoder-compute-units", units, "--text-decoder-compute-units", units]
 
 
-def rss(pid):
-    """Resident memory of process `pid` in bytes, from the system ps (macOS, Linux); None when unreadable."""
-    try:
-        out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
-        return int(out.strip()) * 1024
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-
-
 def free_port():
     with socket.socket() as s:
         s.bind((HOST, 0))
@@ -153,8 +144,8 @@ class Server:
             raise RuntimeError(f"whisperkit-cli exited with code {self.proc.returncode}, see {self.log}")
 
     def rss(self):
-        """Resident memory of the child in bytes; None when unreadable."""
-        return rss(self.proc.pid)
+        """RAM (RSS) of the child in bytes; None when unreadable (also once it has exited)."""
+        return ram.rss(self.proc.pid) if self.proc.poll() is None else None
 
     def close(self):
         atexit.unregister(self.close)
@@ -165,10 +156,6 @@ class Server:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
-
-
-def _gb(size):
-    return "an unknown size" if size is None else f"{size / GB:.1f} GB"
 
 
 class _Replacement:
@@ -218,12 +205,14 @@ class WhisperKitEngine:
 
     name = "whisperkit"
 
-    def __init__(self, launch=None, on_status=None):
+    def __init__(self, launch=None, on_status=None, max_growth_gb=None):
         if launch is None:
             model = model_path()
             print(f"STT: {self.name} {config.WHISPERKIT_MODEL} ({config.WHISPERKIT_COMPUTE_UNITS}) from {model}")
             launch = functools.partial(Server, model)
         self._launch = launch
+        # WHISPERKIT_MAX_GROWTH_GB unless given (stt_bench turns the replacement off with inf).
+        self.max_growth_gb = config.WHISPERKIT_MAX_GROWTH_GB if max_growth_gb is None else max_growth_gb
         self._restarted = False
         self.on_status = on_status or (lambda status: None)  # the restart, shown in the UI
         self._replacement = None  # at most one at a time
@@ -265,6 +254,15 @@ class WhisperKitEngine:
                 raise RuntimeError(f"whisperkit-cli not healthy after {config.WHISPERKIT_START_TIMEOUT_S} s")
             time.sleep(0.2)
 
+    @property
+    def rss_of(self):
+        """Whose RAM rss() reads: the server serving now, a new one after a replacement or restart."""
+        return f"the whisperkit-cli server at {self.server.url}"
+
+    def rss(self):
+        """RAM (RSS) of the server serving now in bytes; None when unreadable."""
+        return self.server.rss()
+
     def close(self):
         if self._replacement is not None:
             self._replacement.close()
@@ -302,7 +300,7 @@ class WhisperKitEngine:
         if self._baseline is None:
             self._baseline = rss
         self._rss = rss
-        if (rss - self._baseline > config.WHISPERKIT_MAX_GROWTH_GB * GB) and self._replacement is None:
+        if (rss - self._baseline > self.max_growth_gb * GB) and self._replacement is None:
             self._replacement = _Replacement(self)
 
     def _switch_if_ready(self):
@@ -317,8 +315,8 @@ class WhisperKitEngine:
             print(f"STT: replacing whisperkit-cli failed ({replacement.error}); it keeps serving, retrying later")
             return
         server, http, rss = replacement.result
-        print(f"STT: whisperkit-cli replaced after {self._requests} requests at {_gb(self._rss)} "
-              f"(warm-up {_gb(self._baseline)}); the new one holds {_gb(rss)}")
+        print(f"STT: whisperkit-cli replaced after {self._requests} requests at {ram.gb(self._rss)} "
+              f"(warm-up {ram.gb(self._baseline)}); the new one holds {ram.gb(rss)}")
         self._close_server()
         self.server, self.http = server, http
         self._baseline = self._rss = rss

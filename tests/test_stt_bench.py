@@ -1,7 +1,10 @@
-"""stt_bench's figures. The request loop itself needs real hardware and has no test."""
+"""stt_bench's figures and the RAM readings it prints. The request loop itself needs real hardware and has no test."""
+
+import sys
 
 import pytest
 
+from copilot import ram
 from copilot.stt_bench import growth_per_1000, word_error_rate
 
 
@@ -23,3 +26,16 @@ def test_growth_per_1000_is_the_fitted_slope_of_rss_over_requests():
 
 def test_growth_per_1000_needs_two_samples():
     assert growth_per_1000([(0, 1)]) is None
+
+
+def test_rss_of_this_process_is_read():
+    assert ram.rss() > 1024 * 1024  # a Python interpreter holds more than 1 MB
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="other processes are read with ps")
+def test_rss_of_a_missing_process_is_unknown():
+    assert ram.rss(2 ** 22 + 12345) is None
+
+
+def test_sizes_are_printed_in_gb():
+    assert (ram.gb(int(2.5 * ram.GB)), ram.gb(None)) == ("2.50 GB", "? GB")

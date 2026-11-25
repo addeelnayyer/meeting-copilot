@@ -8,7 +8,7 @@ import threading
 import time
 
 from . import cuda  # noqa: F401  (registers NVIDIA DLL dirs before ctranslate2 loads)
-from . import config
+from . import config, ram
 from .segment import EngineFailed, Segment, StickyLanguage, is_hallucination
 from .strings import t
 from . import whisperkit
@@ -57,16 +57,20 @@ def chosen_stt_engine(setting):
     return stt_engine(setting, sys.platform, platform.machine(), whisperkit.binary())
 
 
-def build_stt_engine(setting=None, on_status=None):
+def build_stt_engine(setting=None, on_status=None, max_growth_gb=None):
     """Build and warm up the chosen STT engine (`setting` overrides STT_ENGINE) once; it then
-    serves transcribe(chunk) and close(). WhisperKit that fails to start or become healthy falls
-    back to faster-whisper, like a missing binary or a failed model download; the reason is printed.
-    WhisperKit reports a server restart through `on_status`."""
+    serves transcribe(chunk), rss() and close(). WhisperKit that fails to start or become healthy
+    falls back to faster-whisper, like a missing binary or a failed model download; the reason is
+    printed. WhisperKit reports a server restart through `on_status`, and `max_growth_gb`
+    overrides its WHISPERKIT_MAX_GROWTH_GB (inf: never replaced)."""
     setting = setting or config.STT_ENGINE
     name, reason = chosen_stt_engine(setting)
     if name == whisperkit.WhisperKitEngine.name:
+        options = {"on_status": on_status}
+        if max_growth_gb is not None:
+            options["max_growth_gb"] = max_growth_gb
         try:
-            return _build_warm(functools.partial(ENGINES[name], on_status=on_status))
+            return _build_warm(functools.partial(ENGINES[name], **options))
         except Exception as e:
             name, reason = FasterWhisperEngine.name, _fallback_reason(setting, e)
     if reason:
@@ -86,6 +90,12 @@ def _build_warm(engine_class):
 
 class FasterWhisperEngine:
     name = "faster-whisper"
+    rss_of = "this process"  # the STT model is loaded in it
+
+    @staticmethod
+    def rss():
+        """RAM (RSS) of this process in bytes; None when unreadable."""
+        return ram.rss()
 
     def __init__(self):
         import ctranslate2

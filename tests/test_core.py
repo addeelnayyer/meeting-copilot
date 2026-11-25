@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -717,6 +718,31 @@ def test_meeting_opens_the_stt_worker_only_while_running(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_a_segment_of_an_ended_meeting_never_lands_in_the_next_one(tmp_path, monkeypatch):
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.proactive = False
+
+    async def run():
+        a.start_meeting()
+        ended = a.transcript
+        a.on_segment(seg("User", "Erstes Meeting.", time.monotonic()))
+        a.stop_meeting()
+        # The VAD ends the utterance that was open at the stop: still the ended meeting's.
+        a.on_segment(seg("User", "Noch im ersten.", time.monotonic()))
+        # Cut before the next start, transcribed after it (the STT engine was already closed).
+        stale = seg("User", "Zu spät.", time.monotonic())
+        a.start_meeting()
+        a.on_segment(stale)
+        a.on_segment(seg("User", "Zweites Meeting.", time.monotonic()))
+        await a.stop_meeting()
+        return ended
+
+    ended = asyncio.run(run())
+    assert [s.text for s in ended.segments] == ["Erstes Meeting.", "Noch im ersten."]
+    assert [s.text for s in a.transcript.segments] == ["Zweites Meeting."]
+    assert "Zu spät." not in [e.get("text") for e in events]
+
+
 def test_an_audio_error_leaves_the_stt_worker_closed(tmp_path, monkeypatch):
     def broken():
         raise RuntimeError("'parec' not found")
@@ -760,8 +786,9 @@ def test_meeting_record_is_saved_on_stop_with_headings_in_the_ui_language(tmp_pa
 
     async def run():
         a.start_meeting()
-        a.on_segment(seg("Participant", "Was kostet die Website?", 1.0))
-        a.on_segment(seg("User", "Ab 999 Euro.", 3.0))
+        t0 = time.monotonic()  # Segment.t_end: cut during the meeting
+        a.on_segment(seg("Participant", "Was kostet die Website?", t0 + 1.0))
+        a.on_segment(seg("User", "Ab 999 Euro.", t0 + 3.0))
         a._card({"type": "suggestion", "trigger": "Preisfrage", "ts": 0,
                  "suggestions": [{"text": "Das hängt vom Umfang ab."}]})
         a._card({"type": "answer", "query": "What now?", "ts": 0, "suggestions": [{"text": "Wait."}]})
@@ -1106,7 +1133,9 @@ def _transliterated_meeting(tmp_path, monkeypatch):
 
     async def run():
         a.start_meeting()
-        for s in (_urdu(), seg("User", "Guten Tag.", 3.0), _urdu(text="ٹھیک ہوں", t_end=6.0)):
+        t0 = time.monotonic()  # Segment.t_end: cut during the meeting
+        for s in (_urdu(t_end=t0 + 1.0), seg("User", "Guten Tag.", t0 + 3.0),
+                  _urdu(text="ٹھیک ہوں", t_end=t0 + 6.0)):
             a.on_segment(s)
         await _drain()
         await a.stop_meeting()  # too few words for a memory call
@@ -1149,7 +1178,7 @@ def test_a_transliteration_in_flight_at_stop_still_reaches_the_record(tmp_path, 
 
     async def run():
         a.start_meeting()
-        a.on_segment(_urdu())
+        a.on_segment(_urdu(t_end=time.monotonic()))
         await asyncio.sleep(0)  # the transliteration call has started
         await a.stop_meeting()
 

@@ -99,6 +99,9 @@ class Assistant:
         self.audio_error = ""
         self.cards = []  # suggestions and answers of this meeting, for the meeting record
         self.started = None
+        # time.monotonic() at the start of the meeting, the clock of Segment.t_end: an earlier
+        # segment was cut in an ended meeting.
+        self._since = float("-inf")
 
     # --- meeting ---------------------------------------------------------------
     def start_meeting(self):
@@ -111,6 +114,7 @@ class Assistant:
         self.cards = []
         self._transliterations = set()
         self.started = time.time()
+        self._since = time.monotonic()
         self.emit({"type": "reset"})
         self.emit({"type": "memory", "text": self.memory.render()})
         self.active = True
@@ -171,6 +175,11 @@ class Assistant:
 
     # --- input ---------------------------------------------------------------
     def on_segment(self, seg):
+        if seg.t_end < self._since:
+            # Cut before this meeting started, transcribed after it: the ended meeting's last
+            # words (its STT engine closed before the VAD sent them). Never this meeting's.
+            print("STT:      a segment of the ended meeting arrived after the next start; dropped")
+            return
         turn, new_turn, retracted = self.transcript.add(seg)
         for rid in retracted:
             self.emit({"type": "retract", "id": rid})

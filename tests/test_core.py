@@ -120,6 +120,7 @@ class FakeProvider(Provider):
         self.id, self.label, self.model = id, id.title(), f"{id}-model"
         self.delay, self.error, self._configured = delay, error, configured
         self.calls = []  # "warmup" and "complete", in the order they reached the provider
+        self.warmup_error = None  # raised by warmup()
 
     @property
     def configured(self):
@@ -127,6 +128,8 @@ class FakeProvider(Provider):
 
     async def warmup(self):
         self.calls.append("warmup")
+        if self.warmup_error:
+            raise self.warmup_error
 
     async def complete(self, system, prompt, schema=None):
         self.calls.append("complete")
@@ -215,6 +218,36 @@ def test_hedge_warms_the_fallback_once_for_concurrent_requests(monkeypatch):
 
     assert [engine for _, engine, _ in asyncio.run(run())] == ["ollama", "ollama"]
     assert client.fallback.calls == ["warmup", "complete", "complete"]
+
+
+def test_a_failed_warm_up_is_not_kept_and_the_fallback_still_answers(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0, cloud_error=RuntimeError("503"))
+    client.fallback.warmup_error = ValueError("unexpected reply")  # not an httpx.HTTPError
+
+    async def run():
+        engines = [(await client.generate_json("s", "p"))[1] for _ in range(2)]
+        client.fallback.warmup_error = None
+        engines += [(await client.generate_json("s", "p"))[1] for _ in range(2)]
+        return engines
+
+    assert asyncio.run(run()) == ["ollama"] * 4
+    # Tried again on every request until one warm-up succeeds, then kept.
+    assert client.fallback.calls == ["warmup", "complete", "warmup", "complete", "warmup", "complete", "complete"]
+
+
+def test_a_failed_warm_up_of_the_local_primary_is_retried(monkeypatch):
+    client = _llm(monkeypatch, cloud_delay=0.0, ollama_delay=0.0)
+    client.set_primary("ollama")
+    client.fallback.warmup_error = ValueError("unexpected reply")
+
+    async def run():
+        await client.warmup()  # reported, not raised
+        client.fallback.warmup_error = None
+        await client.warmup()
+        await client.warmup()
+
+    asyncio.run(run())
+    assert client.fallback.calls == ["warmup", "warmup"]
 
 
 def test_http_429_uses_retry_after_header():

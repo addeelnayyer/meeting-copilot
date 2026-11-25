@@ -195,11 +195,20 @@ class LLM:
         if self.primary is self.fallback:
             await self._warm_fallback()
 
-    def _warm_fallback(self):
-        """The fallback's warm-up, run once per run and model; concurrent callers share it."""
+    async def _warm_fallback(self):
+        """The fallback's warm-up, run once per run and model; concurrent callers share it. A
+        failed one is reported and not kept, so the next caller tries again."""
         if self._warming is None:
             self._warming = asyncio.ensure_future(self.fallback.warmup())
-        return asyncio.shield(self._warming)  # a cancelled hedge must not cancel the warm-up
+            self._warming.add_done_callback(self._forget_failed_warm_up)
+        try:
+            await asyncio.shield(self._warming)  # a cancelled hedge must not cancel the warm-up
+        except Exception as e:  # the request itself is still tried
+            print(f"Ollama warm-up failed ({type(e).__name__}: {e})")
+
+    def _forget_failed_warm_up(self, task):
+        if self._warming is task and (task.cancelled() or task.exception() is not None):
+            self._warming = None
 
     async def _fallback(self, system, prompt, schema):
         await self._warm_fallback()

@@ -101,6 +101,15 @@ def server_command(binary, model, port):
             "--audio-encoder-compute-units", units, "--text-decoder-compute-units", units]
 
 
+def rss(pid):
+    """Resident memory of process `pid` in bytes, from the system ps (macOS, Linux); None when unreadable."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
+        return int(out.strip()) * 1024
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 def free_port():
     with socket.socket() as s:
         s.bind((HOST, 0))
@@ -144,13 +153,8 @@ class Server:
             raise RuntimeError(f"whisperkit-cli exited with code {self.proc.returncode}, see {self.log}")
 
     def rss(self):
-        """Resident memory of the child in bytes, from the system ps; None when unreadable."""
-        try:
-            out = subprocess.run(["ps", "-o", "rss=", "-p", str(self.proc.pid)], capture_output=True,
-                                 text=True, timeout=5).stdout
-            return int(out.strip()) * 1024
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
+        """Resident memory of the child in bytes; None when unreadable."""
+        return rss(self.proc.pid)
 
     def close(self):
         atexit.unregister(self.close)

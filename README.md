@@ -224,12 +224,20 @@ The prompts are in `copilot/prompts/` (`system.md` for client calls, `interview.
 
 ```sh
 uv run python -m copilot.devices                   # list audio devices, live level meters
-uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine faster-whisper|whisperkit)
+uv run python -m copilot.stt_bench recording.wav   # VAD chunks + STT latency on a WAV file (--engine, --reference, --requests: see below)
 uv run python -m copilot.llm_bench granite4:7b-a1b-h qwen3.5:4b   # local LLM latency, JSON validity and samples per Ollama model
 uv run python -m copilot.rag search "Was kostet eine Website?"
 uv run python -m copilot.rag index --watch         # re-index when knowledge files change (the app does this itself)
 uv run pytest                                      # unit tests (no audio/GPU needed)
 ```
+
+**STT benchmark:** `stt_bench` cuts the WAV into chunks with the real VAD and sends them through the STT engine the app would build (`--engine` overrides `STT_ENGINE`; `WHISPERKIT_MODEL`, `WHISPERKIT_COMPUTE_UNITS` and `WHISPER_MODEL` from `.env` or the environment pick the STT model). It prints the median and p95 latency per chunk, and with `--reference transcript.txt` (the text spoken in the whole WAV) the word error rate, ignoring case and punctuation. The request loop measures RAM:
+
+```sh
+uv run python -m copilot.stt_bench recording.wav --reference transcript.txt --requests 2000
+```
+
+It sends the WAV's chunks round-robin until that many requests have been made (one request is one chunk) and prints the RSS of the STT engine after warm-up, a line every 100 requests, and the RSS growth per 1,000 requests (the fitted slope through those samples), next to the latency and the word error rate of the first pass over the WAV. For WhisperKit the RSS is that of the `whisperkit-cli serve` process, read the same way as for the RAM limit; for faster-whisper it is that of the copilot process. The server replacement is off during the loop, so the raw growth shows; `--keep-replacement` leaves it on (with `WHISPERKIT_MAX_GROWTH_GB` as configured), to watch replacements happen: each switch to a new server is printed, and the growth is then that of the server serving at the end.
 
 To use a device other than the system default, set `MIC_DEVICE` / `LOOPBACK_DEVICE` in `.env` to part of its name, as shown by `copilot.devices`.
 

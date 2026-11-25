@@ -108,8 +108,8 @@ PROACTIVE_MAX_PENDING_S = float(_env("PROACTIVE_MAX_WAIT", "15"))
 PROACTIVE_REPEAT_S = 60  # the same trigger again within this time is not shown again
 SINGLE_SUGGESTION = _env("SINGLE_SUGGESTION", "false").lower() in ("1", "true", "yes")
 SUGGESTION_READ_S = float(_env("SUGGESTION_READ_S", "10"))  # a new card waits this long before replacing one
-MEMORY_INTERVAL_S = int(_env("MEMORY_INTERVAL", "300"))  # rolling meeting summary every 5 min
-MEMORY_MIN_WORDS = 40  # skip the update when little was said
+MEMORY_MIN_WORDS = 40  # the meeting memory is not folded when fewer new words were said
+ASK_MIN_TURNS = 4  # a request sends the segments after the checkpoint, but at least the last this many turns
 
 # --- Knowledge / facts ---
 # Your own data (git-ignored). Starts empty; examples/ holds samples you can copy in.
@@ -145,18 +145,22 @@ WINDOW_SIZE = (520, 900)
 # --- Hotkeys ---
 # Shown as buttons above the question box and bound to the hotkeys. One hotkey per preset; label
 # and question in each UI language (the question is sent to the LLM and repeated on the answer card).
+# The "summary" preset folds the meeting memory instead and shows it as its card.
 PRESETS = [
-    {"hotkey": "ctrl+alt+1",
+    {"id": "answer", "hotkey": "ctrl+alt+1",
      "label": {"en": "What should I answer?", "de": "Was antworten?"},
      "query": {"en": "What should I answer now?", "de": "Was soll ich jetzt antworten?"}},
-    {"hotkey": "ctrl+alt+2",
+    {"id": "questions", "hotkey": "ctrl+alt+2",
+     "label": {"en": "Questions", "de": "Fragen"},
+     "query": {"en": "Which questions should I ask now, given what was said?",
+               "de": "Welche Fragen sollte ich nach dem Gesagten jetzt stellen?"}},
+    {"id": "weak_points", "hotkey": "ctrl+alt+3",
      "label": {"en": "Weak points", "de": "Schwächen"},
      "query": {"en": "Point out the weak points in their offer or argument.",
                "de": "Zeig die Schwächen in ihrem Angebot bzw. Argument auf."}},
-    {"hotkey": "ctrl+alt+3",
+    {"id": "summary", "hotkey": "ctrl+alt+4",
      "label": {"en": "Summary", "de": "Zusammenfassung"},
-     "query": {"en": "Summarize the last few minutes in 2 sentences.",
-               "de": "Fasse die letzten Minuten in 2 Sätzen zusammen."}},
+     "query": {"en": "Summary of the meeting so far", "de": "Zusammenfassung des Meetings bis jetzt"}},
 ]
 HOTKEY_FOCUS = "ctrl+alt+space"
 HOTKEY_TRANSLATE = "ctrl+alt+t"

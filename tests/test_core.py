@@ -257,69 +257,32 @@ def test_schema_is_closed_for_strict_providers():
 
 
 # --- memory --------------------------------------------------------------------------
-def _memory_assistant(tmp_path, reply=None):
-    """A fake assistant whose LLM records every memory call as (system, prompt)."""
-    from copilot.memory import Memory
+def _summarize_once(tmp_path, monkeypatch, reply):
+    """A meeting stopped after enough words for one fold; returns the fold's system prompt."""
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = RecordingLLM(reply=lambda prompt: reply)
 
-    class FakeLLM:
-        calls = []
+    async def run():
+        a.start_meeting()
+        a.on_segment(seg("Participant", "We need the website by the end of March " * 6, time.monotonic()))
+        await a.stop_meeting()
 
-        async def generate(self, system, prompt):
-            self.calls.append((system, prompt))
-            return reply or f"- Zusammenfassung {len(self.calls)}", "gemini", 0.5
-
-    class FakeAssistant:
-        transcript = Transcript()
-        memory = Memory(tmp_path / "s.memory.md")
-        llm = FakeLLM()
-        events = []
-        emit = events.append
-
-    return FakeAssistant()
-
-
-def _summarize_once(tmp_path, reply):
-    from copilot import memory
-
-    a = _memory_assistant(tmp_path, reply)
-    a.transcript.add(seg("Participant", "We need the website by the end of March " * 6, 5.0))
-    asyncio.run(memory.summarize(a))
-    return a.llm.calls[0][0], a
-
-
-def test_memory_summarizes_only_new_segments(tmp_path):
-    from copilot import memory
-
-    a = _memory_assistant(tmp_path)
-    prompts = lambda: [prompt for _, prompt in a.llm.calls]
-    a.transcript.add(seg("Participant", "Kurz.", 1.0))
-    asyncio.run(memory.summarize(a))
-    assert prompts() == []  # below MEMORY_MIN_WORDS
-
-    a.transcript.add(seg("Participant", "Wir brauchen die Website bis Ende März " * 6, 5.0))
-    asyncio.run(memory.summarize(a))
-    assert "Ende März" in prompts()[0] and a.memory.text == "- Zusammenfassung 1"
-    assert (tmp_path / "s.memory.md").read_text(encoding="utf-8") == "- Zusammenfassung 1"
-
-    a.transcript.add(seg("User", "Das bekommen wir hin, versprochen " * 8, 30.0))
-    asyncio.run(memory.summarize(a))
-    assert "Ende März" not in prompts()[1].split("[NEW TRANSCRIPT]")[1]  # only the new part
-    assert "- Zusammenfassung 1" in prompts()[1]  # previous memory is carried forward
-    assert a.events[-1]["type"] == "memory"
+    asyncio.run(run())
+    [(system, _)] = a.llm.calls
+    return system, a, events
 
 
 def test_memory_follows_reply_language(tmp_path, monkeypatch):
-    from copilot import export
-
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "en")
     reply = "## Discussion\n- Website by the end of March"
-    system, a = _summarize_once(tmp_path, reply)
+    system, a, events = _summarize_once(tmp_path, monkeypatch, reply)
     assert "'en'" in system and "German" not in system
     assert "## Discussion" in system and "## Decisions & commitments" in system and "## Verlauf" not in system
     # the panel and the meeting record show the memory as written
-    assert a.events[-1] == {"type": "memory", "text": reply, "engine": "gemini", "ms": 500}
-    record = export.render(a.transcript.segments, a.memory, Facts(tmp_path / "facts.json"), [], 0.0, 60.0)
-    assert reply in record
+    [memory] = [e for e in events if e["type"] == "memory" and e["text"]]
+    assert memory["text"] == reply
+    [record] = (tmp_path / "meetings").iterdir()
+    assert reply in record.read_text(encoding="utf-8")
 
 
 def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
@@ -334,7 +297,7 @@ def test_reply_language_overrides_the_prompt_and_is_repeated(monkeypatch):
 
 def test_memory_stays_german_without_reply_language(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPLY_LANGUAGE", "")
-    system, _ = _summarize_once(tmp_path, "- Zusammenfassung")
+    system, _, _ = _summarize_once(tmp_path, monkeypatch, "- Zusammenfassung")
     assert "in German" in system
     for heading in ("## Verlauf", "## Entscheidungen & Zusagen", "## Offene Punkte & Einwände",
                     "## Stimmung & Prioritäten der Teilnehmer"):
@@ -821,8 +784,8 @@ def test_answer_that_is_not_json_is_reported_in_the_ui_language(tmp_path, monkey
 
 # --- presets per UI language ---------------------------------------------------------
 @pytest.mark.parametrize("lang, labels, first_query", [
-    ("en", ["What should I answer?", "Weak points", "Summary"], "What should I answer now?"),
-    ("de", ["Was antworten?", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
+    ("en", ["What should I answer?", "Questions", "Weak points", "Summary"], "What should I answer now?"),
+    ("de", ["Was antworten?", "Fragen", "Schwächen", "Zusammenfassung"], "Was soll ich jetzt antworten?"),
 ])
 def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_query, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "UI_LANGUAGE", lang)
@@ -830,7 +793,58 @@ def test_presets_carry_the_ui_language_labels_and_questions(lang, labels, first_
     presets = a.presets()
     assert [p["label"] for p in presets] == labels
     assert presets[0]["query"] == first_query
-    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3"]
+    assert [p["hotkey"] for p in presets] == ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3", "ctrl+alt+4"]
+
+
+def _press(a, events, monkeypatch, hotkey):
+    """Press a global hotkey and wait for what it started."""
+    from copilot import hotkeys
+
+    bound = {}
+    monkeypatch.setattr(hotkeys, "_bind", bound.update)
+
+    async def press():
+        hotkeys.register(asyncio.get_running_loop(), a, events.append, SimpleNamespace(supported=False))
+        bound[hotkey]()  # on the hotkey thread in the app
+        await asyncio.sleep(0.05)
+        await _drain()
+
+    return press()
+
+
+@pytest.mark.parametrize("lang, question", [("en", "Which questions should I ask now, given what was said?"),
+                                            ("de", "Welche Fragen sollte ich nach dem Gesagten jetzt stellen?")])
+def test_the_questions_preset_asks_with_the_suggestion_prompt(lang, question, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", lang)
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say("Was kostet die Website?")
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+2"))
+    [prompt] = a.llm.prompts("ask")
+    assert prompt.endswith(f"[USER QUESTION]\n{question}")
+    [card] = [e for e in events if e["type"] == "answer"]
+    assert card["query"] == question and card["suggestions"] == [{"text": "Say yes."}]
+
+
+def test_the_summary_preset_folds_once_and_its_card_is_the_meeting_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say(_words("budget", 25), _words("deadline", 25))
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    assert [kind for kind, *_ in a.llm.calls] == ["fold"]
+    [card] = [e for e in events if e["type"] == "answer"]
+    assert card["summary"] and [s["text"] for s in card["suggestions"]] == ["- Memory 1"]
+    assert [e["text"] for e in events if e["type"] == "memory"][-1] == "- Memory 1"
+
+
+def test_the_summary_preset_with_nothing_new_shows_the_memory_without_a_call(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+    say(_words("budget", 50))
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    say("Okay.")
+    asyncio.run(_press(a, events, monkeypatch, "ctrl+alt+4"))
+    assert len(a.llm.calls) == 1
+    cards = [e for e in events if e["type"] == "answer"]
+    assert [c["suggestions"][0]["text"] for c in cards] == ["- Memory 1", "- Memory 1"]
 
 
 @pytest.mark.parametrize("lang, question", [("en", "What should I answer now?"),
@@ -862,6 +876,223 @@ def test_preset_hotkey_sends_its_question_in_the_ui_language(lang, question, tmp
     assert prompts[0].endswith(f"[USER QUESTION]\n{question}")
     [card] = [e for e in events if e["type"] == "answer"]
     assert card["query"] == question
+
+
+# --- on demand: checkpoint and fold --------------------------------------------------
+class PromptLLM:
+    """Answers suggestions (generate_json) and writes the meeting memory (generate), recording
+    every call as (kind, system, prompt). `fold_errors` fail that many memory calls first."""
+
+    def __init__(self, fold_errors=0, delay=0.0):
+        self.calls, self.fold_errors, self.delay, self.folds = [], fold_errors, delay, 0
+
+    async def generate_json(self, system, prompt):
+        self.calls.append(("ask", system, prompt, time.time()))
+        await asyncio.sleep(self.delay)
+        return {"trigger": "Answer", "suggestions": [{"text": "Say yes."}], "new_facts": []}, "claude", 0.1
+
+    async def generate(self, system, prompt):
+        self.calls.append(("fold", system, prompt, time.time()))
+        if self.fold_errors:
+            self.fold_errors -= 1
+            raise RuntimeError("overloaded")
+        self.folds += 1
+        return f"- Memory {self.folds}", "claude", 0.2
+
+    def prompts(self, kind):
+        return [prompt for k, _, prompt, _ in self.calls if k == kind]
+
+
+def _on_demand(tmp_path, monkeypatch, llm=None):
+    """A recording assistant with a meeting started; `say(*texts)` adds alternating turns."""
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = PromptLLM() if llm is None else llm
+    a.kb = SimpleNamespace(context=lambda q: "")
+    a.start_meeting()
+    clock = [time.monotonic()]
+
+    def say(*texts):
+        spoken = []
+        for text in texts:
+            clock[0] += 5.0  # a new turn each time: the speakers alternate after a long gap
+            source = "Participant" if len(a.transcript.segments) % 2 == 0 else "User"
+            spoken.append(seg(source, text, clock[0]))
+            a.on_segment(spoken[-1])
+        return spoken
+
+    return a, events, say
+
+
+def _words(name, n=20):
+    return " ".join(f"{name}{i}" for i in range(n))
+
+
+def _transcript_part(prompt):
+    return prompt.split("[TRANSCRIPT]")[1]
+
+
+def test_a_request_sends_the_memory_and_only_the_segments_after_the_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ASK_MIN_TURNS", 2)
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("old", 20), _words("older", 20), _words("oldest", 20))
+        await a.ask("What now?")
+        await _drain()  # the fold after the answer
+        say(_words("alpha", 15), _words("beta", 15), _words("gamma", 15))
+        await a.ask("And now?")
+        await _drain()
+        say("delta four")
+        await a.ask("Next?")
+        await _drain()
+
+    asyncio.run(run())
+    first, second, third = a.llm.prompts("ask")
+    assert "old0" in _transcript_part(first)
+    assert "- Memory 1" in second.split("[KNOWLEDGE]")[0]
+    assert [w in _transcript_part(second) for w in ("alpha", "beta", "gamma", "old0", "older0", "oldest0")] == [
+        True, True, True, False, False, False]
+    # one new segment: reaches back to the last two turns, no further
+    assert [w in _transcript_part(third) for w in ("delta", "gamma", "beta", "oldest0")] == [True, True, False, False]
+
+
+def test_after_the_answer_the_new_segments_are_folded_and_the_memory_event_carries_the_checkpoint_time(
+        tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        spoken = say(_words("price", 25), _words("date", 25))
+        await a.ask("What now?")
+        await _drain()
+        return spoken
+
+    spoken = asyncio.run(run())
+    [fold] = a.llm.prompts("fold")
+    assert "price0" in fold and "date0" in fold
+    shown = [e["type"] for e in events if e["type"] in ("answer", "memory")]
+    assert shown[-2:] == ["answer", "memory"]  # the answer first, then the meeting memory
+    assert events[-1] == {"type": "memory", "text": "- Memory 1", "until": spoken[-1].ts,
+                          "engine": "claude", "ms": 200}
+
+
+def test_a_failed_fold_leaves_the_checkpoint_and_the_next_request_sends_the_larger_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ASK_MIN_TURNS", 1)
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_errors=1))
+
+    async def run():
+        say(_words("first", 45))
+        await a.ask("What now?")
+        await _drain()
+        say(_words("second", 45))
+        await a.ask("And now?")
+        await _drain()
+
+    asyncio.run(run())
+    assert {"type": "error", "text": "Memory: overloaded"} in events
+    second = a.llm.prompts("ask")[1]
+    assert "first0" in _transcript_part(second) and "second0" in _transcript_part(second)
+    failed, folded = a.llm.prompts("fold")
+    assert "first0" in folded and "second0" in folded  # the memory catches up
+    assert [e["text"] for e in events if e["type"] == "memory"][-1] == "- Memory 1"
+
+
+def test_a_fold_is_skipped_when_few_words_are_new(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("few", config.MEMORY_MIN_WORDS - 1))
+        await a.ask("What now?")
+        await _drain()
+
+    asyncio.run(run())
+    assert a.llm.prompts("fold") == [] and len(a.llm.prompts("ask")) == 1
+
+
+def test_a_meeting_starts_with_proactive_off(tmp_path, monkeypatch):
+    a, events = _recording(*_meeting_assistant(tmp_path, monkeypatch, None), tmp_path, monkeypatch)
+    a.llm = PromptLLM()
+    a.set_mode(proactive=True)  # left on in the meeting before
+    a.start_meeting()
+    assert {"type": "mode", "proactive": False, "translate": False} in events[events.index({"type": "reset"}):]
+
+    async def run():
+        a.on_segment(seg("Participant", "Das ist uns zu teuer.", time.monotonic()))
+        await asyncio.sleep(config.PROACTIVE_DEBOUNCE_S + 0.1)
+        await _drain()
+
+    monkeypatch.setattr(config, "PROACTIVE_DEBOUNCE_S", 0.01)
+    asyncio.run(run())
+    assert a.llm.calls == []
+
+
+def test_a_proactive_card_sends_the_last_15_turns_and_leaves_the_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROACTIVE_DEBOUNCE_S", 0.01)
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(*(_words(f"turn{i}x", 5) for i in range(18)))  # the last one is the user's
+        a.set_mode(proactive=True)
+        say(_words("turn18x", 5))  # a participant's: the proactive call follows
+        await asyncio.sleep(0.1)
+        await _drain()
+        await a.ask("What now?")
+        await _drain()
+
+    asyncio.run(run())
+    proactive, asked = a.llm.prompts("ask")
+    assert [f"turn{i}x0" in _transcript_part(proactive) for i in (3, 4, 18)] == [False, True, True]
+    assert any(e["type"] == "suggestion" for e in events)
+    assert a.llm.prompts("fold")[0].count("turn") == 19 * 5  # the proactive card folded nothing
+    assert "turn0x0" in _transcript_part(asked)
+
+
+def test_cards_carry_the_time_they_were_asked(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(delay=0.1))
+    say("Was kostet die Website?")
+    before = time.time()
+    asyncio.run(a.ask("What now?"))
+    [card] = [e for e in events if e["type"] == "answer"]
+    [(_, _, _, called)] = a.llm.calls
+    assert before <= card["ts"] <= called  # when asked, not when the answer came
+
+
+def _record(tmp_path):
+    [record] = (tmp_path / "meetings").iterdir()
+    return record.read_text(encoding="utf-8")
+
+
+def test_stopping_a_meeting_folds_the_rest_once_into_the_record(tmp_path, monkeypatch):
+    a, events, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")
+        await _drain()
+        say(_words("deadline", 50))
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    first, last = a.llm.prompts("fold")
+    assert "deadline0" in last.split("[NEW TRANSCRIPT]")[1] and "budget0" not in last.split("[NEW TRANSCRIPT]")[1]
+    assert "- Memory 1" in last  # the meeting memory so far is carried forward
+    assert "- Memory 2" in _record(tmp_path)
+
+
+@pytest.mark.parametrize("llm", [PromptLLM(fold_errors=1), "none"])
+def test_without_a_working_llm_the_record_still_holds_the_transcript(llm, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    if llm == "none":
+        monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+        llm = LLM([FakeProvider("claude", configured=False)])
+    a, _, say = _on_demand(tmp_path, monkeypatch, llm)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    text = _record(tmp_path)
+    assert "(none, the conversation was too short)" in text and "budget0" in text
 
 
 # --- transliteration -------------------------------------------------------------------

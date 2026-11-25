@@ -15,14 +15,14 @@ Speech recognition and the knowledge base run locally. Only the prompts sent to 
 
 - **Dual-stream capture** (mic + system audio: WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux, BlackHole on macOS), Silero VAD, 1.5-2.5 s speech chunks
 - **Local transcription** with `large-v3-turbo`: faster-whisper on CUDA (about 360 ms per chunk on an RTX 4060), WhisperKit on the GPU of Apple Silicon Macs (about 290 ms on an M4 Max, reusing MacWhisper's model if you have it), otherwise `small` on the CPU (see [Speech recognition](#speech-recognition)); German and English by default, any of Whisper's ~99 languages via `LANGUAGES` (see [Languages](#languages))
-- **Proactive suggestions** for questions, objections and action items (1-2 sentences, ready to say)
-- **Push-to-ask**: preset buttons, global hotkeys, or a typed question ("What should I answer?")
+- **On demand**: the AI is asked only when you click a preset button, press its hotkey or type a question ("What should I answer?", "Questions", "Weak points", "Summary")
+- **Proactive suggestions** for questions, objections and action items (1-2 sentences, ready to say), off at the start of every meeting
 - **Live translation** into your language (German by default) and from it into the second one
 - **Meeting records**: every meeting is saved locally as a Markdown file with summary, facts, suggestions and the full transcript
 - **Always on top** with adjustable opacity, built in (Windows and Linux/X11)
 - **Knowledge base (RAG)** over your own Markdown/JSON notes, plus keyword flashcards
 - **Facts sheet** (budgets, names, dates) extracted automatically and kept across meetings
-- **Meeting memory**: a rolling summary every 5 minutes, so the AI remembers the whole meeting and not just the last few sentences
+- **Meeting memory**: a running summary, updated after each of your requests, so the AI remembers the whole meeting while each request sends only what was said since the last one
 - **Bring your own AI**: Gemini, Claude, OpenAI, Grok, or any OpenAI-compatible URL (OmniRoute, OpenRouter, LiteLLM, LM Studio ...), switchable live in the window. No language model runs on your machine; only speech recognition is local
 - Two roles: client/sales calls (`PROMPT=system`) or job interviews and meetings at work (`PROMPT=interview`)
 
@@ -177,17 +177,18 @@ This opens a chromeless window at `http://127.0.0.1:8765`. The copilot does not 
 | Keys | Action |
 | --- | --- |
 | `Ctrl+Alt+1` | "What should I answer now?" (button "What should I answer?") |
-| `Ctrl+Alt+2` | "Point out the weak points in their offer or argument." (button "Weak points") |
-| `Ctrl+Alt+3` | "Summarize the last few minutes in 2 sentences." (button "Summary") |
+| `Ctrl+Alt+2` | "Which questions should I ask now, given what was said?" (button "Questions") |
+| `Ctrl+Alt+3` | "Point out the weak points in their offer or argument." (button "Weak points") |
+| `Ctrl+Alt+4` | Update the meeting memory and show it as a card (button "Summary") |
 | `Ctrl+Alt+Space` | Focus the question box to type your own question |
 | `Ctrl+Alt+T` | Toggle live translation |
-| `Ctrl+Alt+P` | Pause/resume proactive suggestions |
+| `Ctrl+Alt+P` | Turn proactive suggestions on/off (off at the start of every meeting) |
 | `Ctrl+Alt+M` | Mute/unmute your microphone (the participants are still heard) |
 | `Ctrl+Alt+O` | Keep the window on top, or not |
 
 The preset texts above are those of `UI_LANGUAGE=en`, the default; `UI_LANGUAGE=de` shows the German
 buttons and sends the German questions ("Was soll ich jetzt antworten?" ...). Presets are defined once in `PRESETS` in `copilot/config.py`:
-one hotkey each, and a label and question per UI language.
+one hotkey each, and a label and question per UI language. Each card shows the time it was asked.
 
 ## How it works
 
@@ -196,17 +197,17 @@ mic ──────┐                                                       
           ├─ Silero VAD ─ 1.5–2.5 s chunks ─ faster-whisper or WhisperKit ─ transcript ─┼─ push-to-ask answers
 loopback ─┘   (per source)                   (CUDA/CPU)        (Apple GPU)  (turns)     └─ translations
                                                                                 │
-                facts.json + meeting memory (5 min) + knowledge base (RAG) + last 15 turns
+        facts.json + meeting memory + knowledge base (RAG) + segments since the checkpoint
                                                                                 │
                        Gemini | Claude | OpenAI | Grok | custom URL
 ```
 
 - **Chunking:** a chunk ends at a pause once it is at least 1.5 s long, and is force-cut at 2.5 s at the quietest point. Short replies ("Ja.") are still sent once the speaker stops.
 - **Transcription:** the language (one of `LANGUAGES`) is detected per speaker and re-checked every few chunks. Detecting on every chunk would add about 240 ms. WhisperKit reports no language probabilities, so a detected language outside `LANGUAGES` is ignored and the chunk is transcribed again in the speaker's last language. WhisperKit gets no text prompt from the previous sentences (faster-whisper does): it slowed the decoder and caused repetition loops, and segments that look like a loop are dropped.
-- **Proactive mode** reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
+- **Proactive mode** is off at the start of every meeting (button "Proactive", `Ctrl+Alt+P`). When on, it sends the meeting memory and the last 15 turns, and it never updates the meeting memory. It reacts only to participant speech, once the participant has finished a turn (`PROACTIVE_PAUSE`, 1.5 s without new speech; during a monologue at the latest after `PROACTIVE_MAX_WAIT`, 15 s). It shows at most 2 suggestions (`SINGLE_SUGGESTION=true`: 1, larger), stays quiet when the model reports `trigger: None`, and skips a card whose trigger repeats the one on screen within 60 s. Your own speech goes into the context but never triggers a suggestion.
 - **Reading time:** a card stays on top for at least `SUGGESTION_READ_S` (10 s), and while you are speaking (plus 1.5 s), so you can read it aloud. A newer suggestion waits meanwhile ("Neuer Vorschlag wartet", click to show it now; only the newest is kept). Click a card to pin it until you click it again. Answers to your own questions always show at once.
 - **Facts:** the model returns `new_facts`. They are merged into `facts.json`, with lists combined rather than overwritten.
-- **Memory:** every `MEMORY_INTERVAL` seconds (default 300), the new part of the transcript is folded into a running summary covering the discussion, decisions, open points and mood. It is sent as `[MEMORY]` with every prompt, shown under "Memory" in the window, and saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
+- **Meeting memory:** the LLM is called only when you ask. A request sends the meeting memory (`[MEMORY]`) plus every segment since the checkpoint, the point the meeting memory covers (at least the last 4 turns, `ASK_MIN_TURNS`). Once the answer is shown, those segments are folded into the meeting memory in the background and the checkpoint moves on; a failed update keeps the checkpoint, so the next request sends and folds the larger set, and fewer than 40 new words are not folded. The Summary button is that update, shown as a card. Stopping a meeting folds the rest once for the meeting record. The memory covers the discussion, decisions, open points and mood, is shown under "Meeting memory" with the checkpoint time ("Summary up to 14:32"), and is saved as `sessions/<timestamp>.memory.md`. It is written in `REPLY_LANGUAGE` (headings included), otherwise in German.
 - **LLM:** every request goes to the provider picked in the window, and nothing answers in its place. A failed request is explained in the header (timeout, quota, missing key, refusal), and the next request tries again. On a rate-limit or quota error (429) the provider pauses for as long as it says (60 s when it doesn't), and requests during the pause fail at once with a note saying when it ends.
 - **Session log:** every transcript segment is appended to `sessions/<timestamp>.jsonl`, one file per meeting. A transliterated segment's entry also carries its `transliteration`.
 

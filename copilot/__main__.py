@@ -19,7 +19,7 @@ from . import config
 from .assistant import Assistant
 from .audio import Capture
 from .facts import Facts
-from . import memory, rag
+from . import rag
 from .llm import LLM
 from .memory import Memory
 from .rag import KnowledgeBase
@@ -122,7 +122,7 @@ async def main(args):
     llm = LLM()
     assistant = Assistant(Transcript(), Facts(fresh=args.fresh_facts), KnowledgeBase(), llm, hub.publish,
                           Memory(), open_capture, stt.open, stt.close)
-    assistant.set_mode(proactive=True, translate=False)
+    assistant.set_mode(proactive=False, translate=False)
     hub.publish(llm.describe())
     print(f"LLM:      {f'{llm.primary.label} ({llm.primary.model})' if llm.primary else 'none configured'}")
     if config.IGNORED_SETTINGS:
@@ -142,7 +142,6 @@ async def main(args):
 
         hotkeys.register(loop, assistant, hub.publish, window)
 
-    asyncio.ensure_future(memory.run(assistant))
     asyncio.ensure_future(rag.watch(assistant.kb, hub.publish))
 
     async def levels():

@@ -96,6 +96,8 @@ def create_app(hub, assistant, window):
                 msg = await ws.receive_json()
                 if msg.get("type") == "ask":
                     asyncio.ensure_future(assistant.ask(msg.get("query", "")))
+                elif msg.get("type") == "preset":
+                    asyncio.ensure_future(assistant.run_preset(msg.get("id", "")))
                 elif msg.get("type") == "provider":
                     assistant.set_provider(msg.get("id", ""))
                 elif msg.get("type") == "mode":

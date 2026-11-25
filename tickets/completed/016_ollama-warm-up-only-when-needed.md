@@ -3,7 +3,7 @@
 ## Meta
 - ID:             016
 - Typ:            feature
-- Status:         proposed
+- Status:         completed
 - Erstellt:       2026-11-25
 - Erstellt von:   Adeel Nayyer Sheikh
 - Verantwortlich: Adeel Nayyer Sheikh
@@ -22,9 +22,9 @@ The local LLM is loaded only when it is the primary LLM or once the cloud has ac
 - `ollama_status` polling (`/api/tags`) stays, since it loads no model.
 
 ## Akzeptanzkriterien
-- [ ] With a cloud primary, no request reaches Ollama's chat API at startup.
-- [ ] With Ollama primary, the warm-up still runs at startup.
-- [ ] A cloud failure still gets an answer from Ollama.
+- [x] With a cloud primary, no request reaches Ollama's chat API at startup.
+- [x] With Ollama primary, the warm-up still runs at startup.
+- [x] A cloud failure still gets an answer from Ollama.
 
 ## Risiken
 - The first hedged answer after a cloud failure pays the model load time (seconds).
@@ -35,3 +35,4 @@ The local LLM is loaded only when it is the primary LLM or once the cloud has ac
 Make `LLM.warmup()` a no-op unless `self.primary is self.fallback`, and call it from `set_primary` and from the first failover.
 
 ## Kommentare
+- 2026-11-25: done in addeelnayyer/meeting-copilot#47 (PR #50). Real run: the app started idle with Claude as primary LLM; `ollama ps` showed no loaded model. A failed fallback warm-up is not cached; the fallback request still goes out.

@@ -3,7 +3,7 @@
 ## Meta
 - ID:             015
 - Typ:            feature
-- Status:         proposed
+- Status:         completed
 - Erstellt:       2026-11-25
 - Erstellt von:   Adeel Nayyer Sheikh
 - Verantwortlich: Adeel Nayyer Sheikh
@@ -23,10 +23,10 @@ While no meeting runs, no STT model is in RAM. Starting a meeting loads it again
 - Stop then start in quick succession (or start during a build) builds the engine once.
 
 ## Akzeptanzkriterien
-- [ ] After a meeting stops, the engine's `close()` has been called and the worker holds no engine.
-- [ ] Starting the next meeting builds a warm engine, and early chunks are transcribed, not lost.
-- [ ] A fast stop/start sequence builds exactly one engine.
-- [ ] Real run: with no meeting running, no `whisperkit-cli` process exists.
+- [x] After a meeting stops, the engine's `close()` has been called and the worker holds no engine.
+- [x] Starting the next meeting builds a warm engine, and early chunks are transcribed, not lost.
+- [x] A fast stop/start sequence builds exactly one engine.
+- [x] Real run: with no meeting running, no `whisperkit-cli` process exists.
 
 ## Risiken
 - Each meeting start now waits for the STT model to load (seconds; up to minutes on a first Core ML specialization).
@@ -37,3 +37,4 @@ While no meeting runs, no STT model is in RAM. Starting a meeting loads it again
 `SttWorker` gets `want_engine` (a `threading.Event`) set by `start_meeting` and cleared by `stop_meeting` via the loop; the worker builds when it is set and closes when it is cleared and the queue is empty. Remember the run's engine choice after a switch.
 
 ## Kommentare
+- 2026-11-25: done in addeelnayyer/meeting-copilot#46 (PR #50). Real run: the app started idle (`--no-browser --no-hotkeys`) runs no `whisperkit-cli` process. Stopping a meeting closes the engine once no chunk has arrived for `CLOSE_GRACE_S` (1.5 s); a segment cut before the current meeting started is dropped, so a late chunk never lands in the next meeting. The window shows "STT off" while idle.

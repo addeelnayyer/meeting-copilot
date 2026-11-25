@@ -3,7 +3,7 @@
 ## Meta
 - ID:             014
 - Typ:            bug
-- Status:         proposed
+- Status:         completed
 - Erstellt:       2026-11-25
 - Erstellt von:   Adeel Nayyer Sheikh
 - Verantwortlich: Adeel Nayyer Sheikh
@@ -24,11 +24,11 @@ The WhisperKit server never holds more than its size after warm-up plus a set gr
 - Tests with the existing fake HTTP servers and an injectable RAM probe; CI stays on all three OSes.
 
 ## Akzeptanzkriterien
-- [ ] A fake server whose RAM probe grows past the limit is replaced, the next chunk goes to the new server, and the old one is stopped.
-- [ ] No chunk is dropped or transcribed twice across a replacement.
-- [ ] A failed replacement leaves transcription running on the old server.
-- [ ] Real run: `stt_bench` looping a WAV for 2,000+ requests keeps the server's RAM under warm-up size + 1.5 GB (+ one model during a switch).
-- [ ] `.env.example`, README and CLAUDE.md describe the setting; ADR 0001 is linked.
+- [x] A fake server whose RAM probe grows past the limit is replaced, the next chunk goes to the new server, and the old one is stopped.
+- [x] No chunk is dropped or transcribed twice across a replacement.
+- [x] A failed replacement leaves transcription running on the old server.
+- [x] Real run: `stt_bench` looping a WAV for 2,000+ requests keeps the server's RAM under warm-up size + 1.5 GB (+ one model during a switch).
+- [x] `.env.example`, README and CLAUDE.md describe the setting; ADR 0001 is linked.
 
 ## Risiken
 - During a switch two servers are in RAM (about 2× the model).
@@ -41,3 +41,4 @@ The WhisperKit server never holds more than its size after warm-up plus a set gr
 Read the child's RSS with `ps -o rss= -p <pid>` (no new dependency) behind a `rss_probe(pid)` seam. `WhisperKitEngine` keeps `self.server` and an optional `self._next` being started on a worker thread; `transcribe()` checks after each reply and swaps when `_next` is healthy and warm.
 
 ## Kommentare
+- 2026-11-25: done in addeelnayyer/meeting-copilot#45 (PR #50). Real run on the M4 Max, large-v3 `cpuAndGPU`, replacement on with the default 1.5 GB: 2,500 requests of a 29 s English WAV; server RSS 1.59 GB after warm-up, peak 1.91 GB (ceiling 3.09 GB). The leak did not reproduce with this repeated WAV (growth -0.03 GB per 1,000 requests), so no replacement triggered at 1.5 GB. With `WHISPERKIT_MAX_GROWTH_GB=0.1` (600 requests) and `0.01` (300 requests) the real server was replaced 6 and 73 times, every request was served, and no server was left running. Whether the growth follows requests, time or varied audio is open for ticket 017 (#49).

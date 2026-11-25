@@ -17,7 +17,7 @@ The copilot uses as few LLM calls as needed, shows usage and estimated cost live
 
 ## Anforderungen
 - Per-session counters: requests, input/output tokens per engine (from `usage_metadata`), and estimated EUR cost; shown in the header tooltip and the session summary.
-- Configurable budgets: max requests per minute and per session; when exceeded, proactive mode slows down or switches to Ollama.
+- Configurable budgets: max requests per minute and per session; when exceeded, proactive mode slows down or pauses.
 - Batch translation: translate per finished turn or every N seconds instead of per segment.
 - Skip proactive calls when the new participant text is under N words or only filler ("ja", "okay", "genau").
 - A clear UI banner explaining free-tier exhaustion, with a link to enable billing.
@@ -25,15 +25,16 @@ The copilot uses as few LLM calls as needed, shows usage and estimated cost live
 ## Akzeptanzkriterien
 - [ ] A 30-minute test call makes ≤ 50 % of the calls the current build makes, with comparable suggestions.
 - [ ] Token and cost figures match the Google AI Studio usage page within 5 %.
-- [ ] Reaching a budget never blocks the UI; the engine badge shows the fallback.
+- [ ] Reaching a budget never blocks the UI; the window says why.
 
 ## Risiken
 - Being too aggressive about skipping calls may miss short but important objections ("Zu teuer.").
 
 ## Offene Fragen
-- Should translation always use the local model to save quota?
+- Should translation always use a cheaper cloud model to save quota?
 
 ## Erste Umsetzungsidee
 Add a `Usage` class in llm.py that records each response's usage. Add a token-bucket limiter in front of `generate()`. Add a filler-word filter in `Assistant._schedule`.
 
 ## Kommentare
+- 2026-11-25: local LLM removed in ticket 018

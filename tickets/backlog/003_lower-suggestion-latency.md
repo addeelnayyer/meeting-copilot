@@ -10,7 +10,7 @@
 - Referenzen:     copilot/llm.py · copilot/assistant.py · copilot/prompts/system.md
 
 ## Kontext
-Measured on 2026-10-23: a Gemini 3.6 Flash suggestion takes 2.1-2.8 s with the full prompt in JSON mode, and the knowledge-base search adds about 180 ms on top. In JSON mode nothing can be shown until the whole object has arrived. The Ollama fallback (granite4) takes 3-4 s.
+Measured on 2026-10-23: a Gemini 3.6 Flash suggestion takes 2.1-2.8 s with the full prompt in JSON mode, and the knowledge-base search adds about 180 ms on top. In JSON mode nothing can be shown until the whole object has arrived.
 
 ## Ziel
 The first readable suggestion text appears within about 1.2 s of the participant finishing a sentence.
@@ -20,13 +20,12 @@ The first readable suggestion text appears within about 1.2 s of the participant
 - Start knowledge-base retrieval as soon as a segment arrives (speculatively), not after the debounce.
 - Use Gemini context caching for the static system prompt and knowledge snippets.
 - Move fact extraction out of the suggestion call into a separate background call, so the hot path produces a shorter output.
-- Benchmark script `copilot/llm_bench.py` reporting p50/p95 time to first visible word per engine/model.
+- Benchmark script reporting p50/p95 time to first visible word per provider/model.
 - Evaluate `gemini-3.8-flash` (thinking `low`) and Flash-Lite against 3.6 Flash for latency and quality.
 
 ## Akzeptanzkriterien
-- [ ] p50 time to first visible word ≤ 1.2 s on Gemini (measured with `llm_bench.py`).
+- [ ] p50 time to first visible word ≤ 1.2 s on Gemini (measured with the benchmark script).
 - [ ] Suggestion quality is unchanged in a side-by-side review of 20 recorded triggers.
-- [ ] The Ollama path still works offline.
 
 ## Risiken
 - Plain-text streaming loses schema validation, so robust parsing is needed.
@@ -39,3 +38,4 @@ The first readable suggestion text appears within about 1.2 s of the participant
 Output format `TRIGGER: …` followed by numbered suggestion lines, streamed via `generate_content_stream`, with the UI updating the card in place. Facts are extracted by a debounced background job every N turns.
 
 ## Kommentare
+- 2026-11-25: local LLM removed in ticket 018

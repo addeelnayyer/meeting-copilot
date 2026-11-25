@@ -34,7 +34,7 @@ The rolling summary of the meeting so far, written by the LLM and kept in the me
 _Avoid_: memory (unqualified), summary (for the running one); say RAM for the machine's working memory
 
 **Checkpoint**:
-The point in the meeting up to which the meeting memory covers the transcript. It moves forward each time the user asks the LLM something.
+The point in the meeting up to which the meeting memory covers the transcript. It moves forward when the meeting memory is updated after the user asks the LLM something, and when the meeting stops.
 _Avoid_: timestamp, cursor
 
 ## People

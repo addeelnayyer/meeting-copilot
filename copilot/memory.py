@@ -1,6 +1,6 @@
-"""Meeting memory: the segments after the checkpoint are folded into a compact summary after
-each request the user makes and once when the meeting stops, so the LLM still knows what happened
-before the segments it is sent."""
+"""Meeting memory: the segments after the checkpoint are folded into it after each request the
+user makes and once when the meeting stops, so the LLM still knows what happened before the
+segments it is sent."""
 
 from . import config
 MEMORY_SYSTEM = """You maintain the running memory of a live meeting for an AI meeting advisor.
@@ -57,12 +57,12 @@ class Memory:
         return {"type": "memory", "text": self.text, "until": self.until, **extra}
 
 
-async def fold(llm, memory, segments):
+async def fold(llm, memory, segments, min_words=None):
     """Fold the segments after the checkpoint into the memory and move the checkpoint to the last
-    of them. Returns (engine, secs), or None when fewer than MEMORY_MIN_WORDS new words were said.
-    An LLM failure is raised and leaves the checkpoint where it was."""
+    of them. Returns (engine, secs), or None when fewer than `min_words` (default MEMORY_MIN_WORDS)
+    new words were said. An LLM failure is raised and leaves the checkpoint where it was."""
     new = memory.pending(segments)
-    if sum(len(s.text.split()) for s in new) < config.MEMORY_MIN_WORDS:
+    if sum(len(s.text.split()) for s in new) < (config.MEMORY_MIN_WORDS if min_words is None else min_words):
         return None
     text, engine, secs = await llm.generate(system_prompt(config.REPLY_LANGUAGE), memory.prompt(new))
     memory.update(text, new)

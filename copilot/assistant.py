@@ -43,6 +43,7 @@ REPLY_LANGUAGE_RULE = (
 )
 REPLY_LANGUAGE_REMINDER = "\n\nReply in the language with the ISO 639-1 code '{lang}'."
 PROACTIVE_INSTRUCTION = "\n\nRespond to the latest [Participant] turn."
+STOP_LIMIT_S = 30  # the last fold and the transliterations at a meeting stop, then the record is written
 
 
 def reply_reminder():
@@ -92,7 +93,7 @@ class Assistant:
         self._running = False
         self._again = False
         self._last_trigger = ("", 0.0)  # (trigger, time) of the last proactive card
-        self._fold = None  # this meeting's running fold of the meeting memory (one at a time)
+        self._folds = {}  # meeting memory -> its running fold (one at a time per meeting)
         self.open_capture = open_capture  # () -> Capture, opened on the first meeting start
         self.capture = None
         # The STT worker holds an engine only during a meeting: () -> None each, only signalling it.
@@ -117,7 +118,6 @@ class Assistant:
         self.memory = Memory(session.with_suffix(".memory.md"))
         self.cards = []
         self._transliterations = set()
-        self._fold = None
         self.started = time.time()
         self._since = time.monotonic()
         self.emit({"type": "reset"})
@@ -133,23 +133,20 @@ class Assistant:
         self.active = False
         self._apply_audio()
         return asyncio.ensure_future(self._save(self.transcript, self.memory, self.cards, self.started,
-                                                self._transliterations, self._fold))
+                                                self._transliterations))
 
-    async def _save(self, transcript, memory, cards, started, transliterations, running):
+    async def _save(self, transcript, memory, cards, started, transliterations):
         """Fold the segments after the checkpoint into the meeting memory once (after a fold still
-        running) and let the queued transliterations land, then write the meeting record. A new
-        meeting may already be running, so this works on the old meeting's objects."""
+        running), however few, and let the queued transliterations land, all within STOP_LIMIT_S,
+        then write the meeting record. A new meeting may already be running, so this works on the
+        old meeting's objects."""
         current = lambda: self.transcript is transcript  # noqa: E731
         ended = time.time()
-
-        async def last_fold():
-            if running and not running.done():
-                await asyncio.wait({running})
-            await self._fold_memory(transcript, memory)
-
-        fold = asyncio.ensure_future(last_fold())
-        await asyncio.wait({fold, *transliterations}, timeout=30)
+        fold = asyncio.ensure_future(self._fold_next(transcript, memory, min_words=1, final=True))
+        await asyncio.wait({fold, *transliterations}, timeout=STOP_LIMIT_S)
         fold.cancel()  # still running: save with the meeting memory so far
+        if running := self._folds.get(memory):
+            running.cancel()  # nothing writes this meeting's memory after its record
         path = export.write(transcript, memory, self.facts, cards, started, ended)
         if path:
             print(f"Saved:    {path}")
@@ -307,34 +304,47 @@ class Assistant:
         """Fold now and show the meeting memory as the card (no call when nothing new was said)."""
         asked = time.time()
         self.emit({"type": "asking", "query": query})
-        if self._fold and not self._fold.done():
-            await asyncio.wait({self._fold})  # its segments are then already in the memory
-        self._fold = asyncio.ensure_future(self._fold_memory(self.transcript, self.memory))
-        done = await self._fold
+        done = await self._fold_next(self.transcript, self.memory, asked=True)
         if done is False:
             return  # the error is shown
         engine, secs = done or ("", 0.0)
-        self._card({"type": "answer", "summary": True, "query": query, "trigger": "",
-                    "suggestions": [{"text": self.memory.text or t("record.no_summary")}],
-                    "engine": engine, "ms": round(secs * 1000), "ts": asked})
+        # Not recorded as a card: the meeting record holds the meeting memory itself.
+        self.emit({"type": "answer", "summary": True, "query": query, "trigger": "",
+                   "suggestions": [{"text": self.memory.text or t("record.no_summary")}],
+                   "engine": engine, "ms": round(secs * 1000), "ts": asked})
 
     def _fold_in_background(self):
         """Fold the segments after the checkpoint, unless a fold already runs (the next one takes
         what this one leaves)."""
-        if self._fold is None or self._fold.done():
-            self._fold = asyncio.ensure_future(self._fold_memory(self.transcript, self.memory))
-        return self._fold
+        asyncio.ensure_future(self._fold_next(self.transcript, self.memory, if_idle=True))
 
-    async def _fold_memory(self, transcript, memory):
+    async def _fold_next(self, transcript, memory, min_words=None, if_idle=False, final=False, asked=False):
+        """The only way a fold starts, so at most one runs per meeting memory: a running fold is
+        waited for, then what is still new is folded (with if_idle nothing is done instead). Only
+        the final fold at the stop touches an ended meeting's memory. Returns as _fold_memory."""
+        while (running := self._folds.get(memory)) and not running.done():
+            if if_idle:
+                return None
+            await asyncio.wait({running})
+        if not final and not (self.active and self.memory is memory):
+            return None
+        task = self._folds[memory] = asyncio.ensure_future(self._fold_memory(transcript, memory, min_words, asked))
+        task.add_done_callback(lambda done: self._folds.get(memory) is done and self._folds.pop(memory))
+        return await task
+
+    async def _fold_memory(self, transcript, memory, min_words=None, asked=False):
         """One fold: (engine, secs), None when skipped as too short, False when it failed. Events
-        only reach the window while this is the running meeting's memory."""
+        only reach the window while this is the running meeting's memory. The error of a fold the
+        user asked for (Summary) ends that request; any other carries source "memory", so the
+        window does not end a request in flight on it."""
         current = lambda: self.memory is memory  # noqa: E731
         try:
-            done = await meeting_memory.fold(self.llm, memory, transcript.segments)
+            done = await meeting_memory.fold(self.llm, memory, transcript.segments, min_words)
         except Exception as e:
             print(f"Memory:   {e}")
             if current():
-                self.emit({"type": "error", "text": f"Memory: {ui_text(e)}"})
+                self.emit({"type": "error", "text": t("memory.failed", error=ui_text(e)),
+                           **({} if asked else {"source": "memory"})})
             return False
         if done and current():
             engine, secs = done

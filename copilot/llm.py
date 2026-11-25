@@ -74,6 +74,8 @@ class LLM:
         self.note = ""  # why the last request failed or the next one will, shown in the UI
         self._paused_until = 0.0  # after a 429
         self.set_primary(config.LLM_PROVIDER)
+        if not any(p.configured for p in self.providers.values()):
+            self.note = t("llm.none")  # from the start, not only after the first request
 
     def set_primary(self, provider_id):
         """Switch the provider at runtime. An unknown or unconfigured id keeps the current one

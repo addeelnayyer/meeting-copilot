@@ -72,6 +72,7 @@
   .card .when svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
   .sugg.memory { font-size: 14px; font-weight: 400; white-space: pre-wrap; }
   #memory-until { margin-left: 6px; font-size: 11px; color: var(--dim); }
+  #memory-err { margin-left: 6px; font-size: 11px; color: var(--err); }
   .card.answer { border-left-color: #b48cff; }
   .sugg { font-size: 23px; font-weight: 700; line-height: 1.3; margin: 4px 0; }
   .sugg + .sugg { margin-top: 10px; }
@@ -157,7 +158,7 @@
 <div id="err"></div>
 <div id="transcript"></div>
 <details><summary data-t="facts.title"></summary><pre id="facts" data-t="none_yet"></pre></details>
-<details><summary><span data-t="memory.title"></span><span id="memory-until"></span></summary><pre id="memory" data-t="none_yet"></pre></details>
+<details><summary><span data-t="memory.title"></span><span id="memory-until"></span><span id="memory-err"></span></summary><pre id="memory" data-t="none_yet"></pre></details>
 <div id="presets"></div>
 <form id="ask">
   <input id="q" data-t-placeholder="ask.placeholder" autocomplete="off">
@@ -386,7 +387,7 @@ const handlers = {
     $("pin").classList.toggle("on", ev.on_top); $("opacity").value = Math.round(ev.opacity * 100); },
   kb: (ev) => { kb = ev; renderNotice(); },
   facts: (ev) => { $("facts").textContent = ev.text; },
-  memory: (ev) => { $("memory").textContent = ev.text || t("none_yet");
+  memory: (ev) => { $("memory").textContent = ev.text || t("none_yet"); $("memory-err").textContent = "";
     $("memory-until").textContent = ev.until ? t("memory.until", { time: hhmm(ev.until) }) : ""; },
   engine: (ev) => { const e = $("engine"); e.textContent = engineName(ev.engine);
     e.className = "badge cloud";
@@ -399,7 +400,9 @@ const handlers = {
     $("cnote").textContent = ev.cloud_note || "";
     if (ev.user_speaking) userSpokeAt = Date.now(); },
   focus_query: () => { $("q").focus(); $("q").select(); },
-  error: (ev) => { busy(false); $("err").textContent = ev.text; },
+  // A background fold's error (source "memory") leaves a request in flight and its buttons alone.
+  error: (ev) => { if (ev.source === "memory") { $("memory-err").textContent = ev.text; return; }
+    busy(false); $("err").textContent = ev.text; },
 };
 
 function connect() {

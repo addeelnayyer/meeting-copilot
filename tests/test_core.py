@@ -187,6 +187,7 @@ def test_without_a_configured_provider_requests_fail_with_a_note(monkeypatch):
     monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
     client = LLM([FakeProvider("claude", configured=False), FakeProvider("grok", configured=False)])
+    assert client.note == strings.t("llm.none")  # shown in the window from the start
     with pytest.raises(UiError) as e:
         asyncio.run(client.generate("s", "p"))
     assert str(e.value) == client.note == strings.t("llm.none")
@@ -883,8 +884,9 @@ class PromptLLM:
     """Answers suggestions (generate_json) and writes the meeting memory (generate), recording
     every call as (kind, system, prompt). `fold_errors` fail that many memory calls first."""
 
-    def __init__(self, fold_errors=0, delay=0.0):
+    def __init__(self, fold_errors=0, delay=0.0, fold_delay=0.0):
         self.calls, self.fold_errors, self.delay, self.folds = [], fold_errors, delay, 0
+        self.fold_delay, self.folding, self.most_folding = fold_delay, 0, 0  # folds in flight at once
 
     async def generate_json(self, system, prompt):
         self.calls.append(("ask", system, prompt, time.time()))
@@ -893,6 +895,12 @@ class PromptLLM:
 
     async def generate(self, system, prompt):
         self.calls.append(("fold", system, prompt, time.time()))
+        self.folding += 1
+        self.most_folding = max(self.most_folding, self.folding)
+        try:
+            await asyncio.sleep(self.fold_delay)
+        finally:
+            self.folding -= 1
         if self.fold_errors:
             self.fold_errors -= 1
             raise RuntimeError("overloaded")
@@ -977,6 +985,7 @@ def test_after_the_answer_the_new_segments_are_folded_and_the_memory_event_carri
 
 def test_a_failed_fold_leaves_the_checkpoint_and_the_next_request_sends_the_larger_set(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ASK_MIN_TURNS", 1)
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
     a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_errors=1))
 
     async def run():
@@ -988,12 +997,20 @@ def test_a_failed_fold_leaves_the_checkpoint_and_the_next_request_sends_the_larg
         await _drain()
 
     asyncio.run(run())
-    assert {"type": "error", "text": "Memory: overloaded"} in events
+    assert {"type": "error", "source": "memory", "text": "Memory: overloaded"} in events
     second = a.llm.prompts("ask")[1]
     assert "first0" in _transcript_part(second) and "second0" in _transcript_part(second)
     failed, folded = a.llm.prompts("fold")
     assert "first0" in folded and "second0" in folded  # the memory catches up
     assert [e["text"] for e in events if e["type"] == "memory"][-1] == "- Memory 1"
+
+
+def test_a_failed_summary_ends_its_request_with_a_plain_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, events, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_errors=1))
+    say(_words("budget", 50))
+    asyncio.run(a.run_preset("summary"))
+    assert events[-1] == {"type": "error", "text": "Memory: overloaded"}
 
 
 def test_a_fold_is_skipped_when_few_words_are_new(tmp_path, monkeypatch):
@@ -1006,6 +1023,21 @@ def test_a_fold_is_skipped_when_few_words_are_new(tmp_path, monkeypatch):
 
     asyncio.run(run())
     assert a.llm.prompts("fold") == [] and len(a.llm.prompts("ask")) == 1
+
+
+def test_at_most_one_fold_runs_at_a_time(tmp_path, monkeypatch):
+    a, _, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_delay=0.1))
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")
+        await asyncio.sleep(0.01)  # its fold runs in the background
+        say(_words("deadline", 50))
+        await asyncio.gather(a.run_preset("summary"), a.run_preset("summary"), a.ask("And now?"))
+        await _drain()
+
+    asyncio.run(run())
+    assert a.llm.most_folding == 1 and len(a.llm.prompts("fold")) == 2
 
 
 def test_a_meeting_starts_with_proactive_off(tmp_path, monkeypatch):
@@ -1076,6 +1108,53 @@ def test_stopping_a_meeting_folds_the_rest_once_into_the_record(tmp_path, monkey
     assert "deadline0" in last.split("[NEW TRANSCRIPT]")[1] and "budget0" not in last.split("[NEW TRANSCRIPT]")[1]
     assert "- Memory 1" in last  # the meeting memory so far is carried forward
     assert "- Memory 2" in _record(tmp_path)
+
+
+def test_stopping_a_meeting_folds_even_a_few_new_words(tmp_path, monkeypatch):
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+    say("Okay, bis morgen.")
+
+    async def stop():
+        await a.stop_meeting()
+
+    asyncio.run(stop())
+    [fold] = a.llm.prompts("fold")
+    assert "bis morgen" in fold and "- Memory 1" in _record(tmp_path)
+
+
+def test_the_summary_card_is_not_repeated_in_the_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "UI_LANGUAGE", "en")
+    a, _, say = _on_demand(tmp_path, monkeypatch)
+
+    async def run():
+        say(_words("budget", 50))
+        await a.run_preset("summary")
+        await a.stop_meeting()
+
+    asyncio.run(run())
+    text = _record(tmp_path)
+    assert text.count("Memory 1") == 1  # in the meeting memory section only
+    assert "## Suggestions and answers\n(none)" in text
+
+
+def test_nothing_writes_the_meeting_memory_after_its_record(tmp_path, monkeypatch):
+    from copilot import assistant
+
+    monkeypatch.setattr(assistant, "STOP_LIMIT_S", 0.1)
+    a, _, say = _on_demand(tmp_path, monkeypatch, PromptLLM(fold_delay=0.5))
+
+    async def run():
+        say(_words("budget", 50))
+        await a.ask("What now?")  # its fold is still running at the stop
+        await a.stop_meeting()
+        written = _record(tmp_path)
+        await asyncio.sleep(0.6)  # the fold would have finished by now
+        await _drain()
+        return written
+
+    written = asyncio.run(run())
+    assert _record(tmp_path) == written
+    assert a.memory.text == "" and not a.memory.path.exists()
 
 
 @pytest.mark.parametrize("llm", [PromptLLM(fold_errors=1), "none"])
@@ -1219,7 +1298,7 @@ def _transliterated_meeting(tmp_path, monkeypatch):
                   _urdu(text="ٹھیک ہوں", t_end=t0 + 6.0)):
             a.on_segment(s)
         await _drain()
-        await a.stop_meeting()  # too few words for a memory call
+        await a.stop_meeting()  # its memory call fails
 
     asyncio.run(run())
     return a

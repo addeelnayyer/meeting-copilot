@@ -23,7 +23,7 @@ def _turns(segments):
 def _card(c):
     head = f"{t('card.question')} {c['query']}" if c["type"] == "answer" else c.get("trigger", "")
     lines = [f"- **{time.strftime('%H:%M', time.localtime(c['ts']))} {head}**"]
-    lines += ["  - " + s.get("text", "").replace("\n", "\n    ") for s in c.get("suggestions") or []]
+    lines += [f"  - {s.get('text', '')}" for s in c.get("suggestions") or []]
     return "\n".join(lines)
 
 
